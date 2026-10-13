@@ -11,6 +11,11 @@ const { generateKodeBarcode } = require('./barcode');
 
 const JENIS_COL = (nama) => `Batas ${nama}`;
 
+// Kategori/kelompok peserta yang diizinkan (konsisten dengan dropdown di form).
+// Kosong tetap boleh (kategori bersifat opsional).
+const KATEGORI_VALID = ['VIP', 'Karyawan', 'Panitia'];
+const KATEGORI_MAP = new Map(KATEGORI_VALID.map((k) => [k.toLowerCase(), k]));
+
 function jenisAktif() {
   return getDb().prepare('SELECT * FROM jenis_transaksi WHERE aktif = 1 ORDER BY urutan, id').all();
 }
@@ -64,9 +69,10 @@ async function buildTemplate(namaEvent) {
     ['1. Isi data pada sheet "Peserta". Jangan mengubah atau menghapus baris judul (baris 1).'],
     ['2. Kolom bertanda * wajib diisi.'],
     ['3. Kolom "Nomor Peserta" harus unik. Jika sudah pernah diimpor, gunakan opsi "Perbarui data yang sudah ada".'],
-    ['4. Kolom "Batas <Jenis Transaksi>" bersifat opsional. Kosongkan bila peserta memakai batas bawaan event.'],
-    ['5. Isi angka 0 bila peserta tidak boleh memakai transaksi tersebut.'],
-    ['6. Simpan file lalu unggah pada menu Peserta > Impor Excel.'],
+    ['4. Kolom "Kategori" opsional. Bila diisi, gunakan salah satu: VIP, Karyawan, atau Panitia.'],
+    ['5. Kolom "Batas <Jenis Transaksi>" bersifat opsional. Kosongkan bila peserta memakai batas bawaan event.'],
+    ['6. Isi angka 0 bila peserta tidak boleh memakai transaksi tersebut.'],
+    ['7. Simpan file lalu unggah pada menu Peserta > Impor Excel.'],
     [''],
     ['Contoh baris:'],
     ['Nomor Peserta 25001 | Nama Siti Aminah | Kategori VIP | Kontak 0812xxxx | (Batas parkir: 2)'],
@@ -97,12 +103,22 @@ async function buildTemplate(namaEvent) {
   jenis.forEach(() => contoh.push(''));
   const rowContoh = ws.addRow(contoh);
   rowContoh.font = { italic: true, color: { argb: 'FF808080' } };
-  ws.addRow(['25002', 'Budi Santoso', 'Reguler', '0813-1111-2222', ...jenis.map(() => '')]);
+  ws.addRow(['25002', 'Budi Santoso', 'Karyawan', '0813-1111-2222', ...jenis.map(() => '')]);
 
   for (let i = 2; i <= 500; i += 1) {
     for (let c = 1; c <= headers.length; c += 1) {
       ws.getCell(i, c).border = { bottom: { style: 'hair', color: { argb: 'FFD0D0D0' } } };
     }
+    // Dropdown pilihan kategori langsung di Excel (kolom C = Kategori).
+    ws.getCell(i, 3).dataValidation = {
+      type: 'list',
+      allowBlank: true,
+      formulae: [`"${KATEGORI_VALID.join(',')}"`],
+      showErrorMessage: true,
+      errorStyle: 'warning',
+      errorTitle: 'Kategori tidak dikenal',
+      error: `Gunakan salah satu: ${KATEGORI_VALID.join(', ')} (atau kosongkan).`,
+    };
   }
 
   // --- Sheet Jenis Transaksi (referensi) ---
@@ -222,6 +238,22 @@ function validasiDanImpor(rows, { mode, user }) {
     else if (row.nama.length > 120)
       errors.push({ baris: row.baris, kolom: 'Nama', pesan: 'Nama terlalu panjang (maksimal 120 karakter).' });
 
+    // Kategori: opsional, tetapi bila diisi harus salah satu nilai yang diizinkan.
+    // Pencocokan case-insensitive; nilai dinormalkan ke bentuk resmi (mis. "vip" -> "VIP").
+    let kategoriFinal = null;
+    if (row.kategori) {
+      const cocok = KATEGORI_MAP.get(row.kategori.toLowerCase());
+      if (!cocok) {
+        errors.push({
+          baris: row.baris,
+          kolom: 'Kategori',
+          pesan: `Kategori "${row.kategori}" tidak dikenal. Gunakan salah satu: ${KATEGORI_VALID.join(', ')} (atau kosongkan).`,
+        });
+      } else {
+        kategoriFinal = cocok;
+      }
+    }
+
     // Batas per jenis transaksi.
     const batasFinal = {};
     for (const [jenisIdStr, raw] of Object.entries(row.batas)) {
@@ -275,7 +307,7 @@ function validasiDanImpor(rows, { mode, user }) {
       }
       update('peserta', eksisting.id, {
         nama: row.nama,
-        kategori: row.kategori || null,
+        kategori: kategoriFinal,
         kontak: row.kontak || null,
         updated_at: waktu,
         updated_by: user.id,
@@ -291,7 +323,7 @@ function validasiDanImpor(rows, { mode, user }) {
     const pesertaId = insert('peserta', {
       nomor_peserta: row.nomor,
       nama: row.nama,
-      kategori: row.kategori || null,
+      kategori: kategoriFinal,
       kontak: row.kontak || null,
       kode_barcode: kode,
       aktif: 1,
