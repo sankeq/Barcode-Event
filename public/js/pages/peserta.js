@@ -301,7 +301,10 @@ async function hapusPeserta(id, setelah) {
 
 export function dialogBarcode(id, setelah) {
   bukaDialog(
-    `<header><h3>Barcode peserta</h3></header>
+    `<header class="baris-judul">
+       <h3>Barcode peserta</h3>
+       <button type="button" class="tombol-x" data-tutup aria-label="Tutup">✕</button>
+     </header>
      <div id="isi-barcode" class="tengah"><div class="pemuat">Memuat…</div></div>`,
     {
       onMount(isi) {
@@ -327,7 +330,16 @@ export function dialogBarcode(id, setelah) {
               </div>
               <p class="muted kecil" style="margin-top:.6rem">
                 Reset barcode membuat kode baru; barcode lama langsung tidak berlaku.
-              </p>`;
+              </p>
+              <footer>
+                <button type="button" class="tombol" data-tutup>Tutup</button>
+              </footer>`;
+
+            // Tombol tutup di footer dimuat belakangan (lewat innerHTML),
+            // jadi listener bawaan bukaDialog belum menjangkaunya — pasang manual.
+            isi
+              .querySelectorAll('[data-tutup]')
+              .forEach((b) => b.addEventListener('click', tutupDialog));
 
             isi.querySelector('#unduh-png').addEventListener('click', () =>
               unduhBerkas(`/api/peserta/${p.id}/barcode.png?scale=4&tinggi=16`).catch((e) => galat(e.message)),
