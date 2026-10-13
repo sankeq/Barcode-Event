@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cetak Barcode Peserta</title>
+    <link rel="stylesheet" href="/style.css" />
+    <style>
+      body { background: #e2e8f0; }
+      .bilah-cetak {
+        background: #fff;
+        border-bottom: 1px solid var(--garis);
+        padding: 0.7rem 1rem;
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+        flex-wrap: wrap;
+        position: sticky;
+        top: 0;
+        z-index: 5;
+      }
+      .lembar { padding: 1rem; }
+      .grid-label {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+        gap: 0.6rem;
+      }
+      .label-peserta {
+        background: #fff;
+        border: 1px dashed #94a3b8;
+        border-radius: 8px;
+        padding: 0.5rem 0.55rem 0.45rem;
+        text-align: center;
+        page-break-inside: avoid;
+        break-inside: avoid;
+      }
+      .label-peserta .nama { font-weight: 800; font-size: 0.98rem; margin: 0.1rem 0; }
+      .label-peserta .nomor { font-size: 0.78rem; color: #475569; }
+      .label-peserta img { width: 100%; max-width: 220px; }
+      .label-peserta .kode {
+        font-family: ui-monospace, Consolas, monospace;
+        font-size: 0.7rem;
+        color: #334155;
+      }
+      .label-peserta .event { font-size: 0.76rem; font-weight: 700; color: #0f766e; }
+      @media print {
+        body { background: #fff; }
+        .bilah-cetak { display: none !important; }
+        .lembar { padding: 0; }
+        .grid-label { gap: 0.35rem; grid-template-columns: repeat(3, 1fr); }
+        .label-peserta { border: 1px solid #cbd5e1; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="bilah-cetak">
+      <strong>Cetak barcode peserta</strong>
+      <span class="muted kecil" id="info"></span>
+      <span style="flex: 1"></span>
+      <label class="kecil">Kolom per halaman
+        <select id="kolom">
+          <option value="2">2</option>
+          <option value="3" selected>3</option>
+          <option value="4">4</option>
+        </select>
+      </label>
+      <label class="kecil"><input type="checkbox" id="tanpa-isi" /> Tanpa nama &amp; nomor</label>
+      <button class="tombol" onclick="window.close()">Tutup</button>
+      <button class="tombol utama" id="cetak">🖨 Cetak</button>
+    </div>
+
+    <div class="lembar">
+      <div id="daftar" class="grid-label"></div>
+    </div>
+
+    <script type="module" src="/js/cetak.js"></script>
+  </body>
+</html>

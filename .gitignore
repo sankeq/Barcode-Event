@@ -1,0 +1,12 @@
+node_modules/
+
+# Database lokal (berisi data peserta — jangan di-commit)
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Berkas sementara
+*.log
+.DS_Store
+Thumbs.db

@@ -1,0 +1,22 @@
+{
+  "name": "barcode-peserta-event",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Aplikasi web barcode peserta event: impor Excel, cetak barcode, pemindaian transaksi berkuota, dan laporan.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "seed": "node src/seed.js --force"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "bwip-js": "^4.5.1",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.2",
+    "html5-qrcode": "^2.3.8"
+  }
+}
