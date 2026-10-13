@@ -65,17 +65,18 @@ Aplikasi ini adalah proses Node biasa dengan database SQLite berkas tunggal, jad
 ### Langkah
 
 1. **Push kode ke GitHub**, lalu di Railway: *New Project → Deploy from GitHub repo*
-   dan pilih repositori ini. Railway otomatis mendeteksi Node (Nixpacks) dan
-   menjalankan `npm install` lalu `npm start` (lihat `railway.json`).
+   dan pilih repositori ini. Railway membangun dengan **Railpack** (lihat
+   `railway.json`) dan menjalankan `npm start`.
 2. **Pasang Volume agar data tidak hilang saat redeploy.** Di service Railway:
-   *Settings → Volumes → Add Volume*, mount path misalnya `/data`. SQLite menulis
+   *Settings → Volumes → Add Volume*, mount path `/app/data`. SQLite menulis
    berkas di sana, dan isinya bertahan antar deploy.
 3. **Set variabel lingkungan** di *Variables*:
 
    | Variabel | Nilai | Alasan |
    |---|---|---|
-   | `DB_PATH` | `/data/event.db` | Simpan database di volume persisten (wajib bila pakai Volume) |
+   | `DB_PATH` | `/app/data/event.db` | Simpan database di volume persisten (wajib bila pakai Volume) |
    | `COOKIE_SECURE` | `1` | Railway menyajikan lewat HTTPS; cookie sesi harus `Secure` |
+   | `RAILPACK_NODE_VERSION` | `22` | `better-sqlite3@13` butuh Node ≥ 22; Node lebih lama bikin `Segmentation fault` |
 
    `PORT` dan `HOST` **tidak perlu diset** — Railway menyuntikkan `PORT` otomatis,
    dan server akan mendengarkan `0.0.0.0` dengan sendirinya saat `PORT` ada.
