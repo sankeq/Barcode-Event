@@ -2,26 +2,15 @@
 
 /**
  * Titik masuk aplikasi Barcode Peserta Event.
+ * Menyajikan API JSON + antarmuka statis dari folder public/.
  *
- * - Locally: `node src/server.js` men-start server Express biasa.
- * - Vercel/lambda: modul ini men-export default handler yang boleh dipanggil
- *   berulang kali oleh runtime serverless.
- *
- * Catatan penting untuk deploy Vercel:
- * - Aplikasi ini하지만 pakai SQLite lokal (better-sqlite3) dengan satu berkas
- *   database. Itu tidak "bertahan" di Vercel Functions secara default; tiap
- *   invocation bisa dapat container baru danPath DB lokal bisa hilang/tidak
- *   konsisten antar request. Untuk deploy Vercel yang stabil, pindahkan DB ke
- *   layanan persistent (mis. Vercel Postgres / D1 / layanan DB eksternal) atau
- *   gunakan monorepo/server yang mendukung storage persisten.
- * - File statis (public/, vendor/html5-qrcode.min.js) disajikan melalui handler
- *   ini untuk environment serverless; di local tetap bisa dijalankan seperti biasa.
+ * Dijalankan sebagai server Express biasa (`node src/server.js`). Cocok untuk
+ * dijalankan lokal maupun di platform hosting berbasis proses seperti Railway
+ * (lihat README bagian 2b).
  */
 
-const fs = require('node:fs');
 const path = require('node:path');
 const express = require('express');
-
 const { getDb, DB_PATH, getSetting, setSetting } = require('./db');
 const { ensureSeed, seedContoh } = require('./seed');
 
@@ -121,74 +110,6 @@ app.use((err, req, res, next) => {
   });
 });
 
-// --- Vercel / serverless handler ------------------------------------------
-// Runtime Node serverless mengharapkan default export berupa function
-// (request, response) atau sebuah server. Kita pakai pola adapter Express
-// yang umum: export default fungsi yang memproses req/res lewat app.
-//
-// Jalankan di Vercel:
-//   - Tidak memanggil app.listen() di sini.
-//   - Memanggil getDb() on-demand sesuai request (lihat catatan di atas tentang
-//     persistensi DB).
-//   - Menyajikan file statis public/ + vendor/manual jika diperlukan.
-
-function serveStaticIfNeeded(req, res, next) {
-  // Sajikan file statis dari public/ apabila ada (Versi Vercel sering butuh
-  // penanganan manual karena express.static tidak selalu berjalan ideal di
-  // lambda tanpa konfigurasi tambahan).
-  const publicDir = path.join(ROOT, 'public');
-  let rel = req.path;
-  if (rel.endsWith('/')) rel = rel.slice(0, -1);
-  const cand = path.join(publicDir, rel);
-  try {
-    if (fs.existsSync(cand) && fs.statSync(cand).isFile()) {
-      res.sendFile(cand);
-      return true;
-    }
-  } catch {
-    // ada masalah stat, lanjut ke route lain
-  }
-
-  // Jika request ke '/' dan ada index.html, sajikan itu.
-  if (req.path === '/' || req.path === '') {
-    const idx = path.join(publicDir, 'index.html');
-    try {
-      if (fs.existsSync(idx)) {
-        res.sendFile(idx);
-        return true;
-      }
-    } catch {
-      // lanjut
-    }
-  }
-
-  return false;
-}
-
-function asVercelHandler(req, res) {
-  // Pastikan database tersedia untuk request ini (on-demand).
-  // Peringatan: pola ini mengasumsikan DB_PATH bisa ditulis/dibaca di runtime
-  // serverless; di Vercel itu tidak dijamin tanpa storage eksternal.
-  try {
-    getDb();
-  } catch (err) {
-    console.error('[galat DB] gagal siapkan database:', err.message);
-  }
-
-  // Jika request statis, tampilkan langsung.
-  if (serveStaticIfNeeded(req, res)) return;
-
-  // Jalankan Express app untuk request ini.
-  app(req, res);
-}
-
-// Default export wajib ada agar Vercel tidak menolak modul ini dengan:
-// "Invalid export found in module ... The default export must be a function or server."
-module.exports = { app, start: null };
-module.exports.default = asVercelHandler;
-module.exports.handler = asVercelHandler;
-
-// --- Local dev / standalone runner -----------------------------------------
 function start() {
   const db = getDb();
   // Bersihkan sesi kedaluwarsa saat aplikasi dijalankan.
@@ -237,3 +158,5 @@ function start() {
 }
 
 if (require.main === module) start();
+
+module.exports = { app, start };
