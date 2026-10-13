@@ -214,7 +214,12 @@ export function dialogForm(id, setelahSimpan) {
        </div>
        <div class="baris-bidang">
          <label class="bidang"><span>Kategori / kelompok</span>
-           <input name="kategori" maxlength="60" placeholder="mis. VIP / Reguler / Panitia" /></label>
+           <select name="kategori">
+             <option value="">— Pilih —</option>
+             <option value="VIP">VIP</option>
+             <option value="Karyawan">Karyawan</option>
+             <option value="Panitia">Panitia</option>
+           </select></label>
          <label class="bidang"><span>Kontak</span>
            <input name="kontak" maxlength="60" placeholder="mis. 0812xxxxxxx" /></label>
        </div>
@@ -237,7 +242,13 @@ export function dialogForm(id, setelahSimpan) {
             .then((r) => {
               form.nomor_peserta.value = r.peserta.nomor_peserta;
               form.nama.value = r.peserta.nama;
-              form.kategori.value = r.peserta.kategori || '';
+              const katLama = r.peserta.kategori || '';
+              // Pertahankan kategori lama yang di luar daftar bawaan agar tidak
+              // hilang diam-diam saat peserta diubah.
+              if (katLama && ![...form.kategori.options].some((o) => o.value === katLama)) {
+                form.kategori.add(new Option(katLama, katLama));
+              }
+              form.kategori.value = katLama;
               form.kontak.value = r.peserta.kontak || '';
               form.aktif.value = r.peserta.aktif ? '1' : '0';
             })

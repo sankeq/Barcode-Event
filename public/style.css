@@ -110,8 +110,7 @@ p { margin: 0 0 0.6rem; }
   margin-bottom: 0.7rem;
 }
 .bidang > span { font-size: 0.85rem; font-weight: 600; color: #334155; }
-input[type="text"], input[type="password"], input[type="search"], input[type="number"],
-input[type="date"], select, textarea {
+input, select, textarea {
   font: inherit;
   padding: 0.5rem 0.6rem;
   border: 1px solid var(--garis-tegas);
@@ -120,7 +119,13 @@ input[type="date"], select, textarea {
   color: var(--teks);
   width: 100%;
   min-width: 0;
+  box-sizing: border-box;
 }
+/* Samakan tinggi kolom teks dan dropdown agar sejajar dalam satu baris. */
+input:not([type="checkbox"]):not([type="radio"]), select {
+  height: 2.4rem;
+}
+textarea { height: auto; }
 input:focus, select:focus, textarea:focus {
   outline: 2px solid rgba(15, 118, 110, 0.35);
   outline-offset: 0;
@@ -302,7 +307,7 @@ table.data th {
 }
 table.data tbody tr:hover { background: #f8fafc; }
 table.data td.angka { text-align: right; font-variant-numeric: tabular-nums; }
-table.data input[type="number"] { width: 78px; padding: 0.3rem 0.4rem; }
+table.data input[type="number"] { width: 78px; padding: 0.3rem 0.4rem; height: auto; }
 
 .lencana {
   display: inline-block;
