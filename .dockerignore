@@ -1,0 +1,17 @@
+# JANGAN salin node_modules host (Windows) ke image Linux — native binary
+# better-sqlite3 lintas-platform akan menyebabkan Segmentation fault.
+# Dependency di-install ulang di dalam container lewat `npm ci`.
+node_modules/
+
+# Database lokal + berkas sementara SQLite (data ada di Volume Railway).
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Berkas lain yang tak perlu masuk image.
+.git/
+*.log
+.DS_Store
+Thumbs.db
+npm-debug.log*
