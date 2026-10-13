@@ -27,10 +27,16 @@ const { ensureSeed, seedContoh } = require('./seed');
 
 const ROOT = path.join(__dirname, '..');
 const PORT = Number(process.env.PORT || 3000);
-const HOST = process.env.HOST || '127.0.0.1';
+// Di platform hosting (Railway dsb.) PORT disuntikkan dan server harus
+// mendengarkan 0.0.0.0 agar bisa diakses dari luar container. Secara lokal
+// tetap 127.0.0.1 agar aman. Bisa ditimpa lewat variabel HOST.
+const HOST = process.env.HOST || (process.env.PORT ? '0.0.0.0' : '127.0.0.1');
 
 const app = express();
 app.disable('x-powered-by');
+// Di belakang proxy HTTPS Railway: percayai 1 hop proxy agar req.protocol
+// terbaca 'https' dan cookie Secure berfungsi.
+app.set('trust proxy', 1);
 
 // --- Header keamanan dasar -------------------------------------------------
 app.use((req, res, next) => {
