@@ -76,10 +76,14 @@ Aplikasi ini adalah proses Node biasa dengan database SQLite berkas tunggal, jad
    |---|---|---|
    | `DB_PATH` | `/app/data/event.db` | Simpan database di volume persisten (wajib bila pakai Volume) |
    | `COOKIE_SECURE` | `1` | Railway menyajikan lewat HTTPS; cookie sesi harus `Secure` |
-   | `RAILPACK_NODE_VERSION` | `22` | `better-sqlite3@13` butuh Node ≥ 22; Node lebih lama bikin `Segmentation fault` |
 
    `PORT` dan `HOST` **tidak perlu diset** — Railway menyuntikkan `PORT` otomatis,
    dan server akan mendengarkan `0.0.0.0` dengan sendirinya saat `PORT` ada.
+
+   > Catatan versi: proyek memakai `better-sqlite3@^12` yang kompatibel dengan
+   > Node 20 maupun 22 dan punya prebuild untuk versi LTS. Versi 13 sempat dipakai
+   > tetapi mewajibkan Node ≥ 22; di Node 20 modul native-nya `Segmentation fault`
+   > saat start. Dengan v12, deploy tidak lagi bergantung pada versi Node tertentu.
 4. **Generate domain**: *Settings → Networking → Generate Domain* untuk mendapat
    URL publik `https://<nama>.up.railway.app`.
 5. Buka URL tersebut, masuk dengan `admin` / `admin123`, lalu **segera ganti kata
