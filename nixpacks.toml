@@ -1,0 +1,27 @@
+# Konfigurasi Nixpacks (dipakai Railway bila builder = Nixpacks).
+#
+# Tujuan: hilangkan "Segmentation fault" dari better-sqlite3.
+# Akar masalah: Nixpacks default dapat menarik Node versi terbaru yang ABI-nya
+# tidak cocok dengan prebuild native better-sqlite3@13 -> crash saat start.
+#
+# - Kunci Node ke 20 (LTS) yang punya prebuild native stabil.
+# - Sediakan toolchain (python3, gcc, make) agar bila prebuild tak cocok,
+#   modul dikompilasi ulang dari source untuk arsitektur runtime ini.
+# - Paksa rebuild dari source saat install agar native binary benar-benar
+#   cocok dengan container (bukan binary lintas-platform).
+
+providers = ["node"]
+
+[variables]
+NIXPACKS_NODE_VERSION = "20"
+# Hindari npm memangkas devDependencies sebelum build native selesai.
+NPM_CONFIG_PRODUCTION = "false"
+
+[phases.setup]
+nixPkgs = ["nodejs_20", "python3", "gcc", "gnumake"]
+
+[phases.install]
+cmds = ["npm ci --build-from-source"]
+
+[start]
+cmd = "node src/server.js"
