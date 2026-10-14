@@ -15,7 +15,7 @@ berlangsung (tombol besar, status jelas, umpan balik suara saat memindai).
 |---|---|---|
 | Runtime | **Node.js ≥ 20** (diuji pada Node 24) | Sekali pasang, tanpa langkah build |
 | Server | **Express 4** | Ringan, mudah dibaca, cocok untuk aplikasi internal panitia |
-| Database | **SQLite** via `better-sqlite3` (sinkron) | Berkas tunggal (`data/event.db`), mudah dicadangkan, transaksinya ketat |
+| Database | **MySQL** via `mysql2/promise` (pool, async) | Jalan di XAMPP lokal; database + tabel dibuat otomatis saat start; transaksi InnoDB ketat |
 | Barcode | **bwip-js** → Code 128 (SVG & PNG) | SVG vektor = hasil cetak tajam; bisa diunduh PNG |
 | Excel | **exceljs** | Satu pustaka untuk template, impor, dan ekspor laporan |
 | Pemindai kamera | **html5-qrcode** (dimuat dari `node_modules`) | Mendukung kamera perangkat, tanpa CDN |
@@ -23,9 +23,13 @@ berlangsung (tombol besar, status jelas, umpan balik suara saat memindai).
 | Antarmuka | HTML/CSS/Vanilla JS (ES Modules) | Tanpa bundler; cukup muat ulang halaman setelah diedit |
 | Keamanan | `node:crypto` scrypt + sesi cookie httpOnly | Tanpa dependensi auth pihak ketiga |
 
-Tidak ada layanan cloud yang dibutuhkan. Seluruh data tersimpan lokal di server panitia.
+Tidak ada layanan cloud yang dibutuhkan. Seluruh data tersimpan lokal di server
+panitia pada MySQL (mis. yang ikut terpasang bersama XAMPP).
 
 ## 2. Cara menjalankan
+
+> **Nyalakan MySQL dulu** (lihat bagian 2a — Konfigurasi Database XAMPP). Aplikasi
+> membuat database dan seluruh tabel otomatis saat pertama start.
 
 ```bash
 npm install          # hanya sekali
@@ -52,38 +56,56 @@ Konfigurasi lewat variabel lingkungan (opsional):
 
 ```bash
 PORT=8080 HOST=0.0.0.0 node src/server.js   # agar bisa diakses dari HP/tablet panitia
-DB_PATH=/path/lain/event.db node src/server.js
+DB_HOST=127.0.0.1 DB_PORT=3306 DB_USER=root DB_PASSWORD= DB_NAME=event_barcode node src/server.js
+DATABASE_URL=mysql://root:@127.0.0.1:3306/event_barcode node src/server.js   # alternatif satu URL
 COOKIE_SECURE=1 node src/server.js          # bila dipasang di belakang HTTPS
 ```
 
+Lihat [`.env.example`](.env.example) untuk daftar lengkap variabel yang didukung.
+
+## 2a. Konfigurasi Database (XAMPP)
+
+Aplikasi memakai **MySQL** lewat `mysql2/promise`.
+
+1. **Nyalakan MySQL** di panel kontrol XAMPP (modul *MySQL* → *Start*).
+2. **Nilai bawaan** cocok dengan XAMPP standar: host `127.0.0.1`, port `3306`,
+   user `root`, kata sandi **kosong**, dan database `event_barcode`.
+3. **Database dan seluruh tabel dibuat otomatis** saat aplikasi pertama kali
+   dijalankan (`npm start`) — tidak perlu membuat database manual di phpMyAdmin.
+4. Perlu mengubah koneksi? Atur lewat variabel lingkungan `DB_HOST`, `DB_PORT`,
+   `DB_USER`, `DB_PASSWORD`, `DB_NAME`, atau satu `DATABASE_URL`
+   (mis. `mysql://root:@127.0.0.1:3306/event_barcode`). Bila `DATABASE_URL`
+   diisi, ia menang atas variabel `DB_*`. Salin [`.env.example`](.env.example)
+   menjadi `.env` sebagai titik awal.
+5. Setelah database siap, jalankan `npm run seed` untuk mengisi data awal
+   (akun bawaan, jenis transaksi, dan — opsional — data contoh).
+
 ## 2b. Deploy ke Railway
 
-Aplikasi ini adalah proses Node biasa dengan database SQLite berkas tunggal, jadi
+Aplikasi ini adalah proses Node biasa yang menyimpan data di **MySQL**, jadi
 **cocok untuk Railway** (bukan Vercel — platform serverless tidak mendukung
-`app.listen` maupun penulisan berkas SQLite yang persisten).
+`app.listen` dengan baik). Alih-alih berkas lokal, sediakan **layanan MySQL**
+dan arahkan aplikasi ke sana lewat variabel lingkungan.
 
 ### Langkah
 
 1. **Push kode ke GitHub**, lalu di Railway: *New Project → Deploy from GitHub repo*
    dan pilih repositori ini. Railway membangun dengan **Railpack** (lihat
    `railway.json`) dan menjalankan `npm start`.
-2. **Pasang Volume agar data tidak hilang saat redeploy.** Di service Railway:
-   *Settings → Volumes → Add Volume*, mount path `/app/data`. SQLite menulis
-   berkas di sana, dan isinya bertahan antar deploy.
-3. **Set variabel lingkungan** di *Variables*:
+2. **Tambahkan database MySQL** di proyek Railway: *New → Database → Add MySQL*.
+   Railway menyediakan kredensial koneksi (host, port, user, password, nama DB)
+   dan sering juga sebuah `MYSQL_URL`/connection string.
+3. **Set variabel lingkungan** di *Variables* service aplikasi:
 
    | Variabel | Nilai | Alasan |
    |---|---|---|
-   | `DB_PATH` | `/app/data/event.db` | Simpan database di volume persisten (wajib bila pakai Volume) |
+   | `DATABASE_URL` | URL koneksi MySQL dari service database | Satu URL mengatur host/port/user/password/nama DB (menang atas `DB_*`) |
    | `COOKIE_SECURE` | `1` | Railway menyajikan lewat HTTPS; cookie sesi harus `Secure` |
 
-   `PORT` dan `HOST` **tidak perlu diset** — Railway menyuntikkan `PORT` otomatis,
-   dan server akan mendengarkan `0.0.0.0` dengan sendirinya saat `PORT` ada.
-
-   > Catatan versi: proyek memakai `better-sqlite3@^12` yang kompatibel dengan
-   > Node 20 maupun 22 dan punya prebuild untuk versi LTS. Versi 13 sempat dipakai
-   > tetapi mewajibkan Node ≥ 22; di Node 20 modul native-nya `Segmentation fault`
-   > saat start. Dengan v12, deploy tidak lagi bergantung pada versi Node tertentu.
+   Alternatif `DATABASE_URL`: isi `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`,
+   `DB_NAME` secara terpisah. `PORT` dan `HOST` **tidak perlu diset** — Railway
+   menyuntikkan `PORT` otomatis, dan server mendengarkan `0.0.0.0` saat `PORT` ada.
+   Database + tabel dibuat otomatis saat start pertama.
 4. **Generate domain**: *Settings → Networking → Generate Domain* untuk mendapat
    URL publik `https://<nama>.up.railway.app`.
 5. Buka URL tersebut, masuk dengan `admin` / `admin123`, lalu **segera ganti kata
@@ -91,12 +113,11 @@ Aplikasi ini adalah proses Node biasa dengan database SQLite berkas tunggal, jad
 
 ### Catatan penting
 
-- **Database mulai kosong** di deploy pertama (folder `data/` memang tidak ikut
-  Git). Saat start, aplikasi otomatis membuat akun bawaan, 7 jenis transaksi, dan
-  pengaturan dasar. Data peserta Anda impor sendiri lewat menu *Peserta → Impor
-  Excel* setelah online.
-- **Tanpa Volume, data hilang setiap redeploy.** Untuk event sungguhan, langkah 2
-  wajib. Cadangkan juga `event.db` berkala (unduh dari volume) selama event.
+- **Database mulai kosong** di deploy pertama. Saat start, aplikasi otomatis
+  membuat skema, akun bawaan, 7 jenis transaksi, dan pengaturan dasar. Data
+  peserta Anda impor sendiri lewat menu *Peserta → Impor Excel* setelah online.
+- **Data bertahan selama service MySQL hidup** — bukan tersimpan di dalam
+  container aplikasi. Gunakan fitur cadangan database Railway untuk event sungguhan.
 - **Kamera pemindai** butuh konteks aman — karena Railway memberi HTTPS, kamera di
   HP/tablet akan berfungsi langsung dari URL `https://...up.railway.app`.
 
@@ -119,7 +140,9 @@ Ingin memakai data contoh lagi kapan pun? Jalankan:
 npm run seed    # mengisi ulang data contoh (tidak menimpa data Anda)
 ```
 
-Untuk memulai seluruhnya dari nol: hentikan server, hapus folder `data/`, jalankan lagi.
+Untuk memulai seluruhnya dari nol: hentikan server, hapus database `event_barcode`
+di MySQL (mis. `DROP DATABASE event_barcode;` lewat phpMyAdmin), jalankan lagi —
+aplikasi membuat ulang database dan tabelnya otomatis.
 
 ## 3. Alur pemakaian singkat
 
@@ -266,9 +289,10 @@ Hasil pemindaian yang ditampilkan:
 Bagaimana kuota dijaga agar tidak terlampaui:
 
 - Seluruh rangkaian — cari peserta → deteksi pemindaian ganda → hitung pemakaian →
-  catat transaksi — dijalankan dalam **satu transaksi `BEGIN IMMEDIATE`**
-  (lihat [`src/scan.js`](src/scan.js)). Tidak ada celah antara "memeriksa sisa kuota"
-  dan "mencatat pemakaian".
+  catat transaksi — dijalankan dalam **satu transaksi InnoDB** yang mengunci baris
+  peserta lewat `SELECT ... FOR UPDATE` (lihat [`src/scan.js`](src/scan.js)). Baris
+  peserta yang terkunci menjadi titik serialisasi, sehingga tidak ada celah antara
+  "memeriksa sisa kuota" dan "mencatat pemakaian".
 - Karena itu, walaupun banyak permintaan pemindaian datang bersamaan
   (mis. beberapa petugas memindai peserta yang sama dari perangkat berbeda),
   hanya sejumlah kuota yang tersedia yang berhasil. **Diuji: 25 permintaan
@@ -312,7 +336,8 @@ Bagaimana kuota dijaga agar tidak terlampaui:
 ## 9. Asumsi penting
 
 1. **Pemakaian di satu lokasi event** dengan satu server yang dijalankan panitia
-   (laptop/mini PC). Database SQLite lokal, bukan multi-server.
+   (laptop/mini PC). Database MySQL lokal (mis. XAMPP) di mesin yang sama, bukan
+   multi-server.
 2. Perangkat panitia mengakses aplikasi lewat jaringan setempat. Untuk mode ini,
    jalankan dengan `HOST=0.0.0.0` dan catat: **kamera pemindai memerlukan konteks
    aman** — `localhost` atau HTTPS. Bila diakses dari HP lewat `http://<IP-lokal>`,
@@ -326,18 +351,19 @@ Bagaimana kuota dijaga agar tidak terlampaui:
    multi-hari, atur batas sesuai kebutuhan atau gunakan jenis transaksi per hari
    (mis. "Makan Siang Hari 1"). Reset kuota massal bisa dilakukan dengan
    "Kembalikan ke bawaan" atau dengan memulai database baru.
-6. Data pribadi peserta (nama, kontak) disimpan lokal; cadangkan `data/event.db`
-   berkala selama event dan hapus sesuai kebijakan panitia setelah selesai.
+6. Data pribadi peserta (nama, kontak) disimpan lokal di MySQL; cadangkan database
+   `event_barcode` berkala selama event (mis. ekspor lewat phpMyAdmin atau
+   `mysqldump`) dan hapus sesuai kebijakan panitia setelah selesai.
 
 ## 10. Struktur berkas
 
 ```
 src/
   server.js        titik masuk: header keamanan, pemasangan rute, penyajian UI
-  db.js            koneksi SQLite + skema lengkap
+  db.js            koneksi MySQL (pool mysql2/promise) + skema lengkap
   seed.js          data awal (pengguna, jenis transaksi, peserta contoh)
   auth.js          scrypt, sesi cookie, middleware peran
-  scan.js          mesin kuota: SATU transaksi BEGIN IMMEDIATE per pemindaian
+  scan.js          mesin kuota: SATU transaksi InnoDB + SELECT ... FOR UPDATE per pemindaian
   barcode.js       pembuatan kode unik + render Code 128 (SVG/PNG)
   excel.js         template, pembacaan impor + validasi, helper ekspor
   audit.js         pencatatan aktivitas
@@ -352,8 +378,10 @@ public/
   js/pages/*.js    dasbor, batas (menu Jenis Transaksi), scan, peserta,
                    riwayat, laporan, pengguna, pengaturan
   js/{api,ui,state}.js  klien API, helper UI, status bersama
-data/event.db      database SQLite (dibuat otomatis, jangan dimasukkan ke Git)
 ```
+
+> Database tidak lagi berupa berkas di dalam repo: aplikasi membuat database
+> `event_barcode` di MySQL otomatis saat start (lihat bagian 2a).
 
 ## 11. Verifikasi yang sudah dijalankan
 
@@ -422,25 +450,25 @@ versi. Risikonya dinilai tidak berlaku untuk aplikasi ini.
 ## 12. Catatan deploy ke Vercel
 
 Aplikasi ini secara bawaan dirancang untuk **dijalankan sebagai server sendiri**
-(`node src/server.js`), dengan SQLite lokal di `data/event.db`. Untuk hosting,
+(`node src/server.js`) dengan database **MySQL** (mis. XAMPP lokal). Untuk hosting,
 **Railway lebih cocok** (lihat bagian 2b) karena menjalankan proses Node biasa
-dengan volume persisten.
+dan bisa menyediakan service MySQL terkelola.
 
 Vercel bersifat serverless dan punya batasan penting:
 
-- `better-sqlite3` + satu berkas database lokal **tidak persisten** di lingkungan
-  serverless Vercel secara default. Request yang datang ke instance berbeda
-  (atau container baru) bisa kehilangan akses ke data yang sama.
-- Karena itu, deploy ke Vercel **tanpa penyesuaian storage** bisa berjalan
-  sebentar lalu kembali ke keadaan kosong/tidak konsisten, atau gagal karena
-  lokasi DB tidak bisa ditulis.
+- Model aplikasi ini adalah satu proses Node yang `app.listen` dan memegang
+  connection pool MySQL — pola yang **tidak selaras** dengan fungsi serverless
+  berumur pendek di Vercel.
+- Karena itu, deploy ke Vercel **tanpa penyesuaian** bisa gagal menjaga koneksi
+  database yang stabil atau tidak dapat menerima koneksi masuk sebagaimana server
+  biasa.
 
 Jika ingin menyebarkan ke Vercel:
 
-1. Pindahkan penyimpanan data ke layanan yang persisten dan support di Vercel
-   (contoh: Vercel Postgres, D1, atau database eksternal yang diijinkan).
-2. Sesuaikan `src/db.js` dan bagian seed/init supaya tidak mengandalkan
-   `data/event.db` lokal untuk data penting.
+1. Sediakan **MySQL eksternal** yang bisa diakses dari Vercel dan arahkan aplikasi
+   lewat `DATABASE_URL` (atau `DB_*`).
+2. Sesuaikan `src/server.js` ke model handler serverless dan kelola connection
+   pool `src/db.js` agar aman dipakai lintas invokasi fungsi.
 3. Pastikan static files (`public/`, `vendor/...`) serta route API tetap di-serving
    dengan benar lewat handler di `src/server.js` atau konfigurasi Vercel yang
    sesuai.
