@@ -6,7 +6,7 @@
  */
 
 const ExcelJS = require('exceljs');
-const { getDb, insert, update } = require('./db');
+const { query, getConnection } = require('./db');
 const { generateKodeBarcode } = require('./barcode');
 
 const JENIS_COL = (nama) => `Batas ${nama}`;
@@ -16,8 +16,25 @@ const JENIS_COL = (nama) => `Batas ${nama}`;
 const KATEGORI_VALID = ['VIP', 'Karyawan', 'Panitia'];
 const KATEGORI_MAP = new Map(KATEGORI_VALID.map((k) => [k.toLowerCase(), k]));
 
-function jenisAktif() {
-  return getDb().prepare('SELECT * FROM jenis_transaksi WHERE aktif = 1 ORDER BY urutan, id').all();
+async function jenisAktif() {
+  return query('SELECT * FROM jenis_transaksi WHERE aktif = 1 ORDER BY urutan, id');
+}
+
+/**
+ * Buat kode barcode unik memakai koneksi transaksi. generateKodeBarcode
+ * memerlukan callback isTaken sinkron, jadi kita bungkus loop pembuatan kode
+ * di sini: coba kandidat, cek keunikan via await, ulangi bila bentrok.
+ */
+async function buatKodeUnikTx(conn, nomorPeserta) {
+  for (let i = 0; i < 25; i += 1) {
+    // generateKodeBarcode selalu mengembalikan pada percobaan pertama bila
+    // isTaken() => false, sehingga di sini ia berfungsi sebagai generator kode.
+    const kode = generateKodeBarcode(nomorPeserta, () => false);
+    const [rows] = await conn.query('SELECT 1 AS x FROM peserta WHERE kode_barcode = ? LIMIT 1', [kode]);
+    if (!rows.length) return kode;
+  }
+  // Jaring pengaman: paksa kode acak panjang via generator bawaan.
+  return generateKodeBarcode(`${nomorPeserta}-${Date.now()}`, () => false);
 }
 
 function sel(value) {
@@ -54,7 +71,7 @@ function gayaJudul(row) {
 
 /** Bangun workbook template impor peserta (dinamis mengikuti jenis transaksi aktif). */
 async function buildTemplate(namaEvent) {
-  const jenis = jenisAktif();
+  const jenis = await jenisAktif();
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Aplikasi Barcode Peserta Event';
   wb.created = new Date();
@@ -148,7 +165,7 @@ async function parseImportFile(buffer) {
   const headerRow = ws.getRow(1);
   const kolom = { nomor: null, nama: null, kategori: null, kontak: null };
   const kolomBatas = []; // [{ index, jenis }]
-  const jenis = jenisAktif();
+  const jenis = await jenisAktif();
   const byNama = new Map(jenis.map((j) => [j.nama.toLowerCase(), j]));
 
   const norm = (s) => teksSel(s).toLowerCase().replace(/\s+/g, ' ').replace(/\s*\*\s*$/, '').trim();
@@ -202,143 +219,145 @@ async function parseImportFile(buffer) {
  * Validasi + impor. Mode: 'tambah' (lewati ID yang sudah ada) atau 'perbarui'.
  * Baris valid tetap diimpor; baris bermasalah dilaporkan dengan nomor barisnya.
  */
-function validasiDanImpor(rows, { mode, user }) {
-  const db = getDb();
-  const jenisAktifMap = new Map(jenisAktif().map((j) => [j.id, j]));
+async function validasiDanImpor(rows, { mode, user }) {
+  const jenisAktifMap = new Map((await jenisAktif()).map((j) => [j.id, j]));
 
   const errors = [];
   const terlihatDiFile = new Map();
   let inserted = 0;
   let updated = 0;
-  let dilewati = 0;
+  const dilewati = 0;
   const ID_RE = /^[A-Za-z0-9._\-/]{1,40}$/;
 
-  const adaNomor = db.prepare('SELECT * FROM peserta WHERE nomor_peserta = ? COLLATE NOCASE');
-  const kodeTaken = db.prepare('SELECT 1 AS x FROM peserta WHERE kode_barcode = ? COLLATE NOCASE');
-  const setKuota = db.prepare(
+  const UPSERT_KUOTA =
     `INSERT INTO kuota_peserta (peserta_id, jenis_id, batas, updated_at, updated_by)
      VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(peserta_id, jenis_id) DO UPDATE SET batas = excluded.batas,
-       updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
-  );
+     ON DUPLICATE KEY UPDATE batas = VALUES(batas),
+       updated_at = VALUES(updated_at), updated_by = VALUES(updated_by)`;
 
-  const simpan = db.transaction((row) => {
-    const eksisting = adaNomor.get(row.nomor);
+  const conn = await getConnection();
+  try {
+    await conn.beginTransaction();
 
-    // Validasi kolom wajib + format.
-    if (!row.nomor) errors.push({ baris: row.baris, kolom: 'Nomor Peserta', pesan: 'Kolom wajib belum diisi.' });
-    else if (!ID_RE.test(row.nomor))
-      errors.push({
-        baris: row.baris,
-        kolom: 'Nomor Peserta',
-        pesan: `Format tidak valid ("${row.nomor}"). Gunakan huruf/angka/tanda - _ . / maksimal 40 karakter.`,
-      });
-    if (!row.nama)
-      errors.push({ baris: row.baris, kolom: 'Nama', pesan: 'Kolom wajib belum diisi.' });
-    else if (row.nama.length > 120)
-      errors.push({ baris: row.baris, kolom: 'Nama', pesan: 'Nama terlalu panjang (maksimal 120 karakter).' });
+    for (const row of rows) {
+      const [eksistingRows] = await conn.query(
+        'SELECT * FROM peserta WHERE nomor_peserta = ? LIMIT 1',
+        [row.nomor],
+      );
+      const eksisting = eksistingRows[0];
 
-    // Kategori: opsional, tetapi bila diisi harus salah satu nilai yang diizinkan.
-    // Pencocokan case-insensitive; nilai dinormalkan ke bentuk resmi (mis. "vip" -> "VIP").
-    let kategoriFinal = null;
-    if (row.kategori) {
-      const cocok = KATEGORI_MAP.get(row.kategori.toLowerCase());
-      if (!cocok) {
-        errors.push({
-          baris: row.baris,
-          kolom: 'Kategori',
-          pesan: `Kategori "${row.kategori}" tidak dikenal. Gunakan salah satu: ${KATEGORI_VALID.join(', ')} (atau kosongkan).`,
-        });
-      } else {
-        kategoriFinal = cocok;
-      }
-    }
-
-    // Batas per jenis transaksi.
-    const batasFinal = {};
-    for (const [jenisIdStr, raw] of Object.entries(row.batas)) {
-      const jenisId = Number(jenisIdStr);
-      const j = jenisAktifMap.get(jenisId);
-      if (!j) continue;
-      if (!/^\d+$/.test(String(raw))) {
-        errors.push({
-          baris: row.baris,
-          kolom: JENIS_COL(j.nama),
-          pesan: `Harus berupa angka bulat 0 atau lebih (ditemukan "${raw}").`,
-        });
-        continue;
-      }
-      const n = Number(raw);
-      if (n < 0 || n > 999) {
-        errors.push({
-          baris: row.baris,
-          kolom: JENIS_COL(j.nama),
-          pesan: `Batas di luar rentang yang wajar (0-999).`,
-        });
-        continue;
-      }
-      batasFinal[jenisId] = n;
-    }
-
-    if (errors.some((e) => e.baris === row.baris)) return;
-
-    // Duplikat di dalam file.
-    const kunci = row.nomor.toLowerCase();
-    if (terlihatDiFile.has(kunci)) {
-      errors.push({
-        baris: row.baris,
-        kolom: 'Nomor Peserta',
-        pesan: `ID ganda di dalam file, sudah dipakai pada baris ${terlihatDiFile.get(kunci)}.`,
-      });
-      return;
-    }
-    terlihatDiFile.set(kunci, row.baris);
-
-    const waktu = new Date().toISOString();
-
-    if (eksisting) {
-      if (mode !== 'perbarui') {
+      // Validasi kolom wajib + format.
+      if (!row.nomor) errors.push({ baris: row.baris, kolom: 'Nomor Peserta', pesan: 'Kolom wajib belum diisi.' });
+      else if (!ID_RE.test(row.nomor))
         errors.push({
           baris: row.baris,
           kolom: 'Nomor Peserta',
-          pesan: `ID "${row.nomor}" sudah terdaftar sebagai ${eksisting.nama}. Pilih opsi "Perbarui data yang sudah ada" bila ingin menimpa.`,
+          pesan: `Format tidak valid ("${row.nomor}"). Gunakan huruf/angka/tanda - _ . / maksimal 40 karakter.`,
         });
-        return;
+      if (!row.nama)
+        errors.push({ baris: row.baris, kolom: 'Nama', pesan: 'Kolom wajib belum diisi.' });
+      else if (row.nama.length > 120)
+        errors.push({ baris: row.baris, kolom: 'Nama', pesan: 'Nama terlalu panjang (maksimal 120 karakter).' });
+
+      // Kategori: opsional, tetapi bila diisi harus salah satu nilai yang diizinkan.
+      // Pencocokan case-insensitive; nilai dinormalkan ke bentuk resmi (mis. "vip" -> "VIP").
+      let kategoriFinal = null;
+      if (row.kategori) {
+        const cocok = KATEGORI_MAP.get(row.kategori.toLowerCase());
+        if (!cocok) {
+          errors.push({
+            baris: row.baris,
+            kolom: 'Kategori',
+            pesan: `Kategori "${row.kategori}" tidak dikenal. Gunakan salah satu: ${KATEGORI_VALID.join(', ')} (atau kosongkan).`,
+          });
+        } else {
+          kategoriFinal = cocok;
+        }
       }
-      update('peserta', eksisting.id, {
-        nama: row.nama,
-        kategori: kategoriFinal,
-        kontak: row.kontak || null,
-        updated_at: waktu,
-        updated_by: user.id,
-      });
-      updated += 1;
-      Object.entries(batasFinal).forEach(([jenisId, batas]) => {
-        setKuota.run(eksisting.id, Number(jenisId), batas, waktu, user.id);
-      });
-      return;
+
+      // Batas per jenis transaksi.
+      const batasFinal = {};
+      for (const [jenisIdStr, raw] of Object.entries(row.batas)) {
+        const jenisId = Number(jenisIdStr);
+        const j = jenisAktifMap.get(jenisId);
+        if (!j) continue;
+        if (!/^\d+$/.test(String(raw))) {
+          errors.push({
+            baris: row.baris,
+            kolom: JENIS_COL(j.nama),
+            pesan: `Harus berupa angka bulat 0 atau lebih (ditemukan "${raw}").`,
+          });
+          continue;
+        }
+        const n = Number(raw);
+        if (n < 0 || n > 999) {
+          errors.push({
+            baris: row.baris,
+            kolom: JENIS_COL(j.nama),
+            pesan: `Batas di luar rentang yang wajar (0-999).`,
+          });
+          continue;
+        }
+        batasFinal[jenisId] = n;
+      }
+
+      if (errors.some((e) => e.baris === row.baris)) continue;
+
+      // Duplikat di dalam file.
+      const kunci = row.nomor.toLowerCase();
+      if (terlihatDiFile.has(kunci)) {
+        errors.push({
+          baris: row.baris,
+          kolom: 'Nomor Peserta',
+          pesan: `ID ganda di dalam file, sudah dipakai pada baris ${terlihatDiFile.get(kunci)}.`,
+        });
+        continue;
+      }
+      terlihatDiFile.set(kunci, row.baris);
+
+      const waktu = new Date().toISOString();
+
+      if (eksisting) {
+        if (mode !== 'perbarui') {
+          errors.push({
+            baris: row.baris,
+            kolom: 'Nomor Peserta',
+            pesan: `ID "${row.nomor}" sudah terdaftar sebagai ${eksisting.nama}. Pilih opsi "Perbarui data yang sudah ada" bila ingin menimpa.`,
+          });
+          continue;
+        }
+        await conn.query(
+          'UPDATE peserta SET nama = ?, kategori = ?, kontak = ?, updated_at = ?, updated_by = ? WHERE id = ?',
+          [row.nama, kategoriFinal, row.kontak || null, waktu, user.id, eksisting.id],
+        );
+        updated += 1;
+        for (const [jenisId, batas] of Object.entries(batasFinal)) {
+          await conn.query(UPSERT_KUOTA, [eksisting.id, Number(jenisId), batas, waktu, user.id]);
+        }
+        continue;
+      }
+
+      const kode = await buatKodeUnikTx(conn, row.nomor);
+      const [resPeserta] = await conn.query(
+        `INSERT INTO peserta
+          (nomor_peserta, nama, kategori, kontak, kode_barcode, aktif, created_at, updated_at, created_by, updated_by)
+         VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+        [row.nomor, row.nama, kategoriFinal, row.kontak || null, kode, waktu, waktu, user.id, user.id],
+      );
+      const pesertaId = resPeserta.insertId;
+      for (const [jenisId, batas] of Object.entries(batasFinal)) {
+        await conn.query(UPSERT_KUOTA, [pesertaId, Number(jenisId), batas, waktu, user.id]);
+      }
+      inserted += 1;
     }
 
-    const kode = generateKodeBarcode(row.nomor, (k) => !!kodeTaken.get(k));
-    const pesertaId = insert('peserta', {
-      nomor_peserta: row.nomor,
-      nama: row.nama,
-      kategori: kategoriFinal,
-      kontak: row.kontak || null,
-      kode_barcode: kode,
-      aktif: 1,
-      created_at: waktu,
-      updated_at: waktu,
-      created_by: user.id,
-      updated_by: user.id,
-    });
-    Object.entries(batasFinal).forEach(([jenisId, batas]) => {
-      setKuota.run(pesertaId, Number(jenisId), batas, waktu, user.id);
-    });
-    inserted += 1;
-  });
-
-  for (const row of rows) simpan.immediate(row);
+    await conn.commit();
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
 
   return { inserted, updated, dilewati, errors, totalBaris: rows.length };
 }

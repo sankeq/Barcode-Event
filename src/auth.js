@@ -9,7 +9,7 @@
  */
 
 const crypto = require('node:crypto');
-const { getDb, insert } = require('./db');
+const { query, insert } = require('./db');
 
 const COOKIE_NAME = 'sesi';
 const SESSION_HOURS = 12;
@@ -43,11 +43,11 @@ function verifyPassword(password, stored) {
   }
 }
 
-function createSession(userId, userAgent) {
+async function createSession(userId, userAgent) {
   const token = crypto.randomBytes(32).toString('base64url');
   const now = new Date();
   const expires = new Date(now.getTime() + SESSION_HOURS * 3600 * 1000);
-  insert('sessions', {
+  await insert('sessions', {
     token,
     user_id: userId,
     created_at: now.toISOString(),
@@ -57,9 +57,9 @@ function createSession(userId, userAgent) {
   return { token, expires };
 }
 
-function destroySession(token) {
+async function destroySession(token) {
   if (!token) return;
-  getDb().prepare('DELETE FROM sessions WHERE token = ?').run(token);
+  await query('DELETE FROM sessions WHERE token = ?', [token]);
 }
 
 function parseCookies(header) {
@@ -76,19 +76,19 @@ function parseCookies(header) {
 }
 
 /** Ambil pengguna dari sesi; null bila tidak ada / kedaluwarsa / nonaktif. */
-function userFromRequest(req) {
+async function userFromRequest(req) {
   const token = parseCookies(req.headers.cookie)[COOKIE_NAME];
   if (!token) return null;
-  const row = getDb()
-    .prepare(
-      `SELECT s.token, s.expires_at, u.id, u.username, u.nama, u.role, u.aktif
-         FROM sessions s JOIN users u ON u.id = s.user_id
-        WHERE s.token = ?`,
-    )
-    .get(token);
+  const rows = await query(
+    `SELECT s.token, s.expires_at, u.id, u.username, u.nama, u.role, u.aktif
+       FROM sessions s JOIN users u ON u.id = s.user_id
+      WHERE s.token = ?`,
+    [token],
+  );
+  const row = rows[0];
   if (!row) return null;
   if (new Date(row.expires_at).getTime() < Date.now() || !row.aktif) {
-    destroySession(token);
+    await destroySession(token);
     return null;
   }
   return { token, id: row.id, username: row.username, nama: row.nama, role: row.role };
@@ -110,11 +110,15 @@ function clearSessionCookie(res) {
   res.append('Set-Cookie', `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
 }
 
-function requireAuth(req, res, next) {
-  const user = userFromRequest(req);
-  if (!user) return res.status(401).json({ error: 'Sesi tidak valid. Silakan masuk kembali.' });
-  req.user = user;
-  next();
+async function requireAuth(req, res, next) {
+  try {
+    const user = await userFromRequest(req);
+    if (!user) return res.status(401).json({ error: 'Sesi tidak valid. Silakan masuk kembali.' });
+    req.user = user;
+    next();
+  } catch (err) {
+    next(err);
+  }
 }
 
 function requireRole(...roles) {

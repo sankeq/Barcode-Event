@@ -7,10 +7,16 @@
  */
 
 const express = require('express');
-const { getDb } = require('../db');
+const { query, getConnection, getPool } = require('../db');
 const { requireAuth, requireRole } = require('../auth');
 const { logAudit } = require('../audit');
 const { asyncHandler, toInt, nowIso } = require('../util');
+
+const UPSERT_KUOTA =
+  `INSERT INTO kuota_peserta (peserta_id, jenis_id, batas, updated_at, updated_by)
+   VALUES (?, ?, ?, ?, ?)
+   ON DUPLICATE KEY UPDATE batas = VALUES(batas),
+     updated_at = VALUES(updated_at), updated_by = VALUES(updated_by)`;
 
 const router = express.Router();
 const adminOnly = [requireAuth, requireRole('admin')];
@@ -28,32 +34,27 @@ function validasiBatas(raw) {
 router.put(
   '/peserta/:id',
   ...adminOnly,
-  asyncHandler((req, res) => {
+  asyncHandler(async (req, res) => {
     const pesertaId = toInt(req.params.id, -1);
-    const db = getDb();
-    const peserta = db.prepare('SELECT * FROM peserta WHERE id = ?').get(pesertaId);
+    const peserta = (await query('SELECT * FROM peserta WHERE id = ?', [pesertaId]))[0];
     if (!peserta) return res.status(404).json({ error: 'Peserta tidak ditemukan.' });
 
     const items = Array.isArray(req.body?.items) ? req.body.items : null;
     if (!items || !items.length) return res.status(400).json({ error: 'Tidak ada perubahan batas.' });
 
-    const jenisAda = db.prepare('SELECT 1 AS x FROM jenis_transaksi WHERE id = ?');
-    const upsert = db.prepare(
-      `INSERT INTO kuota_peserta (peserta_id, jenis_id, batas, updated_at, updated_by)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(peserta_id, jenis_id) DO UPDATE SET batas = excluded.batas,
-         updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
-    );
-    const hapus = db.prepare('DELETE FROM kuota_peserta WHERE peserta_id = ? AND jenis_id = ?');
-
     const errors = [];
     const diterapkan = [];
     const waktu = nowIso();
 
-    const jalankan = db.transaction(() => {
+    const conn = await getConnection();
+    try {
+      await conn.beginTransaction();
       for (const it of items) {
         const jenisId = toInt(it.jenisId, 0);
-        if (!jenisId || !jenisAda.get(jenisId)) {
+        const [jenisAda] = jenisId
+          ? await conn.query('SELECT 1 AS x FROM jenis_transaksi WHERE id = ?', [jenisId])
+          : [[]];
+        if (!jenisId || !jenisAda.length) {
           errors.push(`Jenis transaksi tidak dikenal (id ${it.jenisId}).`);
           continue;
         }
@@ -63,19 +64,24 @@ router.put(
           continue;
         }
         if (v.hapus) {
-          hapus.run(pesertaId, jenisId);
+          await conn.query('DELETE FROM kuota_peserta WHERE peserta_id = ? AND jenis_id = ?', [pesertaId, jenisId]);
           diterapkan.push({ jenisId, batas: null });
         } else {
-          upsert.run(pesertaId, jenisId, v.batas, waktu, req.user.id);
+          await conn.query(UPSERT_KUOTA, [pesertaId, jenisId, v.batas, waktu, req.user.id]);
           diterapkan.push({ jenisId, batas: v.batas });
         }
       }
-    });
-    jalankan.immediate();
+      await conn.commit();
+    } catch (err) {
+      await conn.rollback();
+      conn.release();
+      throw err;
+    }
+    conn.release();
 
     if (errors.length && !diterapkan.length) return res.status(400).json({ error: errors.join(' ') });
 
-    logAudit({
+    await logAudit({
       user: req.user,
       aksi: 'kuota.ubah_peserta',
       entitas: 'peserta',
@@ -90,20 +96,19 @@ router.put(
 router.post(
   '/peserta/:id/reset',
   ...adminOnly,
-  asyncHandler((req, res) => {
+  asyncHandler(async (req, res) => {
     const pesertaId = toInt(req.params.id, -1);
-    const db = getDb();
-    const peserta = db.prepare('SELECT * FROM peserta WHERE id = ?').get(pesertaId);
+    const peserta = (await query('SELECT * FROM peserta WHERE id = ?', [pesertaId]))[0];
     if (!peserta) return res.status(404).json({ error: 'Peserta tidak ditemukan.' });
-    const info = db.prepare('DELETE FROM kuota_peserta WHERE peserta_id = ?').run(pesertaId);
-    logAudit({
+    const [info] = await getPool().query('DELETE FROM kuota_peserta WHERE peserta_id = ?', [pesertaId]);
+    await logAudit({
       user: req.user,
       aksi: 'kuota.reset_peserta',
       entitas: 'peserta',
       entitasId: pesertaId,
-      detail: { dihapus: info.changes },
+      detail: { dihapus: info.affectedRows },
     });
-    res.json({ ok: true, dihapus: info.changes });
+    res.json({ ok: true, dihapus: info.affectedRows });
   }),
 );
 
@@ -111,10 +116,9 @@ router.post(
 router.post(
   '/jenis/:id/terapkan',
   ...adminOnly,
-  asyncHandler((req, res) => {
+  asyncHandler(async (req, res) => {
     const jenisId = toInt(req.params.id, -1);
-    const db = getDb();
-    const jenis = db.prepare('SELECT * FROM jenis_transaksi WHERE id = ?').get(jenisId);
+    const jenis = (await query('SELECT * FROM jenis_transaksi WHERE id = ?', [jenisId]))[0];
     if (!jenis) return res.status(404).json({ error: 'Jenis transaksi tidak ditemukan.' });
 
     const v = validasiBatas(req.body?.batas);
@@ -122,20 +126,23 @@ router.post(
       return res.status(400).json({ error: 'Masukkan batas berupa angka bulat 0-999.' });
     }
 
-    const peserta = db.prepare('SELECT id FROM peserta WHERE aktif = 1').all();
-    const upsert = db.prepare(
-      `INSERT INTO kuota_peserta (peserta_id, jenis_id, batas, updated_at, updated_by)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(peserta_id, jenis_id) DO UPDATE SET batas = excluded.batas,
-         updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
-    );
+    const peserta = await query('SELECT id FROM peserta WHERE aktif = 1');
     const waktu = nowIso();
-    const jalankan = db.transaction(() => {
-      peserta.forEach((p) => upsert.run(p.id, jenisId, v.batas, waktu, req.user.id));
-    });
-    jalankan.immediate();
+    const conn = await getConnection();
+    try {
+      await conn.beginTransaction();
+      for (const p of peserta) {
+        await conn.query(UPSERT_KUOTA, [p.id, jenisId, v.batas, waktu, req.user.id]);
+      }
+      await conn.commit();
+    } catch (err) {
+      await conn.rollback();
+      conn.release();
+      throw err;
+    }
+    conn.release();
 
-    logAudit({
+    await logAudit({
       user: req.user,
       aksi: 'kuota.terapkan_massal',
       entitas: 'jenis_transaksi',
@@ -150,20 +157,19 @@ router.post(
 router.post(
   '/jenis/:id/hapus-override',
   ...adminOnly,
-  asyncHandler((req, res) => {
+  asyncHandler(async (req, res) => {
     const jenisId = toInt(req.params.id, -1);
-    const db = getDb();
-    const jenis = db.prepare('SELECT * FROM jenis_transaksi WHERE id = ?').get(jenisId);
+    const jenis = (await query('SELECT * FROM jenis_transaksi WHERE id = ?', [jenisId]))[0];
     if (!jenis) return res.status(404).json({ error: 'Jenis transaksi tidak ditemukan.' });
-    const info = db.prepare('DELETE FROM kuota_peserta WHERE jenis_id = ?').run(jenisId);
-    logAudit({
+    const [info] = await getPool().query('DELETE FROM kuota_peserta WHERE jenis_id = ?', [jenisId]);
+    await logAudit({
       user: req.user,
       aksi: 'kuota.hapus_override_jenis',
       entitas: 'jenis_transaksi',
       entitasId: jenisId,
-      detail: { dihapus: info.changes },
+      detail: { dihapus: info.affectedRows },
     });
-    res.json({ ok: true, dihapus: info.changes });
+    res.json({ ok: true, dihapus: info.affectedRows });
   }),
 );
 

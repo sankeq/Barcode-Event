@@ -3,7 +3,7 @@
 /** Rute autentikasi: masuk, keluar, dan info sesi aktif. */
 
 const express = require('express');
-const { getDb } = require('../db');
+const { query } = require('../db');
 const {
   verifyPassword,
   createSession,
@@ -22,7 +22,7 @@ const router = express.Router();
 
 router.post(
   '/login',
-  asyncHandler((req, res) => {
+  asyncHandler(async (req, res) => {
     const username = String(req.body?.username || '').trim();
     const password = String(req.body?.password || '');
     if (!username || !password) {
@@ -37,9 +37,7 @@ router.post(
       });
     }
 
-    const user = getDb()
-      .prepare('SELECT * FROM users WHERE username = ? COLLATE NOCASE')
-      .get(username);
+    const user = (await query('SELECT * FROM users WHERE username = ?', [username]))[0];
 
     if (!user || !verifyPassword(password, user.password_hash)) {
       noteLoginFailure(kunci);
@@ -50,9 +48,9 @@ router.post(
     }
 
     clearLoginFailures(kunci);
-    const { token, expires } = createSession(user.id, req.headers['user-agent']);
+    const { token, expires } = await createSession(user.id, req.headers['user-agent']);
     setSessionCookie(res, token, expires);
-    logAudit({
+    await logAudit({
       user: { id: user.id, nama: user.nama, username: user.username },
       aksi: 'login',
       entitas: 'users',
@@ -66,11 +64,11 @@ router.post(
 
 router.post(
   '/logout',
-  asyncHandler((req, res) => {
-    const user = userFromRequest(req);
+  asyncHandler(async (req, res) => {
+    const user = await userFromRequest(req);
     if (user) {
-      destroySession(user.token);
-      logAudit({ user, aksi: 'logout', entitas: 'users', entitasId: user.id });
+      await destroySession(user.token);
+      await logAudit({ user, aksi: 'logout', entitas: 'users', entitasId: user.id });
     }
     clearSessionCookie(res);
     res.json({ ok: true });
@@ -79,8 +77,8 @@ router.post(
 
 router.get(
   '/me',
-  asyncHandler((req, res) => {
-    const user = userFromRequest(req);
+  asyncHandler(async (req, res) => {
+    const user = await userFromRequest(req);
     if (!user) return res.status(401).json({ error: 'Belum masuk.' });
     const { token, ...bersih } = user;
     res.json({ user: bersih });

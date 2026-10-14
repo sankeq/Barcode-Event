@@ -4,7 +4,7 @@
 
 const express = require('express');
 const ExcelJS = require('exceljs');
-const { getDb } = require('../db');
+const { query } = require('../db');
 const { requireAuth, requireRole } = require('../auth');
 const { asyncHandler, parsePaging, toInt, trimOrNull, rentangTanggal, nowIso } = require('../util');
 const { sheetDariData } = require('../excel');
@@ -82,33 +82,32 @@ router.get(
   '/',
   requireAuth,
   requireRole('admin'),
-  asyncHandler((req, res) => {
-    const db = getDb();
+  asyncHandler(async (req, res) => {
     const { page, perPage, offset } = parsePaging(req.query, 50);
     const { whereSql, params } = bangunFilter(req.query || {});
 
-    const total = db.prepare(`SELECT COUNT(*) AS c FROM transaksi t ${whereSql}`).get(...params).c;
+    const total = (await query(`SELECT COUNT(*) AS c FROM transaksi t ${whereSql}`, params))[0].c;
 
-    const data = db
-      .prepare(
-        `SELECT t.* FROM transaksi t ${whereSql}
-          ORDER BY t.waktu DESC, t.id DESC LIMIT ? OFFSET ?`,
-      )
-      .all(...params, perPage, offset);
+    const data = await query(
+      `SELECT t.* FROM transaksi t ${whereSql}
+        ORDER BY t.waktu DESC, t.id DESC LIMIT ? OFFSET ?`,
+      [...params, perPage, offset],
+    );
 
-    const ringkasan = db
-      .prepare(
+    const ringkasan = (
+      await query(
         `SELECT
            SUM(CASE WHEN t.status = 'berhasil' THEN 1 ELSE 0 END) AS berhasil,
            SUM(CASE WHEN t.status = 'ditolak'  THEN 1 ELSE 0 END) AS ditolak,
            SUM(CASE WHEN t.status = 'ganda'    THEN 1 ELSE 0 END) AS ganda
          FROM transaksi t ${whereSql}`,
+        params,
       )
-      .get(...params);
+    )[0];
 
-    const petugas = db
-      .prepare("SELECT id, nama, role FROM users WHERE aktif = 1 ORDER BY nama COLLATE NOCASE")
-      .all();
+    const petugas = await query(
+      'SELECT id, nama, role FROM users WHERE aktif = 1 ORDER BY nama',
+    );
 
     res.json({
       data: data.map((t) => ({ ...t, statusLabel: labelStatus(t.status) })),
@@ -132,9 +131,10 @@ router.get(
   requireRole('admin'),
   asyncHandler(async (req, res) => {
     const { whereSql, params } = bangunFilter(req.query || {});
-    const rows = getDb()
-      .prepare(`SELECT t.* FROM transaksi t ${whereSql} ORDER BY t.waktu DESC, t.id DESC LIMIT 20000`)
-      .all(...params);
+    const rows = await query(
+      `SELECT t.* FROM transaksi t ${whereSql} ORDER BY t.waktu DESC, t.id DESC LIMIT 20000`,
+      params,
+    );
 
     const wb = new ExcelJS.Workbook();
     wb.creator = 'Aplikasi Barcode Peserta Event';

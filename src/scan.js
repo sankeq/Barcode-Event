@@ -4,66 +4,109 @@
  * Mesin pemindaian: satu-satunya tempat kuota peserta boleh bertambah.
  *
  * Seluruh pemeriksaan (peserta terdaftar -> deteksi pemindaian ganda ->
- * cek sisa kuota -> pencatatan) dijalankan di dalam SATU transaksi
- * BEGIN IMMEDIATE. Dengan begitu kuota tidak dapat terlampaui walaupun
- * banyak pemindaian diproses bersamaan.
+ * cek sisa kuota -> pencatatan) dijalankan di dalam SATU transaksi InnoDB
+ * memakai satu koneksi dari pool: beginTransaction + SELECT ... FOR UPDATE
+ * pada baris peserta sebagai titik serialisasi. Dengan begitu kuota tidak
+ * dapat terlampaui walaupun banyak pemindaian diproses bersamaan.
  */
 
-const { getDb, insert, getNumberSetting } = require('./db');
+const { query, getConnection, getNumberSetting } = require('./db');
 
-function jenisAktifById(jenisId) {
-  return getDb()
-    .prepare('SELECT * FROM jenis_transaksi WHERE id = ? AND aktif = 1')
-    .get(jenisId);
+async function jenisAktifById(jenisId) {
+  const rows = await query('SELECT * FROM jenis_transaksi WHERE id = ? AND aktif = 1', [jenisId]);
+  return rows[0] || null;
 }
 
-function cariPeserta(kode) {
-  const d = getDb();
+/**
+ * Cari peserta memakai koneksi transaksi & kunci barisnya (FOR UPDATE).
+ * Pencocokan berdasarkan kode_barcode lalu fallback nomor_peserta.
+ */
+async function cariPesertaTx(conn, kode) {
   const teks = String(kode || '').trim();
   if (!teks) return null;
-  return (
-    d.prepare('SELECT * FROM peserta WHERE kode_barcode = ? COLLATE NOCASE').get(teks) ||
-    d.prepare('SELECT * FROM peserta WHERE nomor_peserta = ? COLLATE NOCASE').get(teks) ||
-    null
+  const [byBarcode] = await conn.query(
+    'SELECT * FROM peserta WHERE kode_barcode = ? LIMIT 1 FOR UPDATE',
+    [teks],
   );
+  if (byBarcode.length) return byBarcode[0];
+  const [byNomor] = await conn.query(
+    'SELECT * FROM peserta WHERE nomor_peserta = ? LIMIT 1 FOR UPDATE',
+    [teks],
+  );
+  return byNomor.length ? byNomor[0] : null;
+}
+
+/** Versi pool biasa (tanpa FOR UPDATE) untuk pemakaian di luar transaksi scan. */
+async function cariPeserta(kode) {
+  const teks = String(kode || '').trim();
+  if (!teks) return null;
+  const byBarcode = await query('SELECT * FROM peserta WHERE kode_barcode = ? LIMIT 1', [teks]);
+  if (byBarcode.length) return byBarcode[0];
+  const byNomor = await query('SELECT * FROM peserta WHERE nomor_peserta = ? LIMIT 1', [teks]);
+  return byNomor.length ? byNomor[0] : null;
 }
 
 /** Batas berlaku = override per peserta bila ada, jika tidak batas_default jenis. */
-function batasEfektif(pesertaId, jenisId, batasDefault) {
-  const ov = getDb()
-    .prepare('SELECT batas FROM kuota_peserta WHERE peserta_id = ? AND jenis_id = ?')
-    .get(pesertaId, jenisId);
-  return ov ? ov.batas : batasDefault;
+async function batasEfektif(pesertaId, jenisId, batasDefault) {
+  const rows = await query(
+    'SELECT batas FROM kuota_peserta WHERE peserta_id = ? AND jenis_id = ?',
+    [pesertaId, jenisId],
+  );
+  return rows.length ? rows[0].batas : batasDefault;
 }
 
-function jumlahTerpakai(pesertaId, jenisId) {
-  return getDb()
-    .prepare(
-      `SELECT COUNT(*) AS c FROM transaksi
-        WHERE peserta_id = ? AND jenis_id = ? AND status = 'berhasil'`,
-    )
-    .get(pesertaId, jenisId).c;
+async function batasEfektifTx(conn, pesertaId, jenisId, batasDefault) {
+  const [rows] = await conn.query(
+    'SELECT batas FROM kuota_peserta WHERE peserta_id = ? AND jenis_id = ?',
+    [pesertaId, jenisId],
+  );
+  return rows.length ? rows[0].batas : batasDefault;
 }
 
-function catat({ status, alasan, jenis, peserta, kode, user, batas, urutanKe, sisaSetelah }) {
-  insert('transaksi', {
-    status,
-    alasan: alasan || null,
-    waktu: new Date().toISOString(),
-    jenis_id: jenis.id,
-    jenis_nama: jenis.nama,
-    peserta_id: peserta ? peserta.id : null,
-    nomor_peserta: peserta ? peserta.nomor_peserta : null,
-    nama_peserta: peserta ? peserta.nama : null,
-    kategori: peserta ? peserta.kategori : null,
-    kode_barcode: String(kode || '').slice(0, 120),
-    batas: batas == null ? null : batas,
-    urutan_ke: urutanKe == null ? null : urutanKe,
-    sisa_setelah: sisaSetelah == null ? null : sisaSetelah,
-    petugas_id: user.id,
-    petugas_nama: user.nama,
-    petugas_role: user.role,
-  });
+async function jumlahTerpakai(pesertaId, jenisId) {
+  const rows = await query(
+    `SELECT COUNT(*) AS c FROM transaksi
+      WHERE peserta_id = ? AND jenis_id = ? AND status = 'berhasil'`,
+    [pesertaId, jenisId],
+  );
+  return rows[0].c;
+}
+
+async function jumlahTerpakaiTx(conn, pesertaId, jenisId) {
+  const [rows] = await conn.query(
+    `SELECT COUNT(*) AS c FROM transaksi
+      WHERE peserta_id = ? AND jenis_id = ? AND status = 'berhasil'`,
+    [pesertaId, jenisId],
+  );
+  return rows[0].c;
+}
+
+async function catatTx(conn, { status, alasan, jenis, peserta, kode, user, batas, urutanKe, sisaSetelah }) {
+  await conn.query(
+    `INSERT INTO transaksi
+      (status, alasan, waktu, jenis_id, jenis_nama, peserta_id, nomor_peserta,
+       nama_peserta, kategori, kode_barcode, batas, urutan_ke, sisa_setelah,
+       petugas_id, petugas_nama, petugas_role)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      status,
+      alasan || null,
+      new Date().toISOString(),
+      jenis.id,
+      jenis.nama,
+      peserta ? peserta.id : null,
+      peserta ? peserta.nomor_peserta : null,
+      peserta ? peserta.nama : null,
+      peserta ? peserta.kategori : null,
+      String(kode || '').slice(0, 120),
+      batas == null ? null : batas,
+      urutanKe == null ? null : urutanKe,
+      sisaSetelah == null ? null : sisaSetelah,
+      user.id,
+      user.nama,
+      user.role,
+    ],
+  );
 }
 
 function ringkas(peserta, jenis, batas, dipakai) {
@@ -89,9 +132,8 @@ function ringkas(peserta, jenis, batas, dipakai) {
  * Proses satu pemindaian barcode.
  * @returns {{status:'berhasil'|'ditolak'|'ganda', pesan:string, ...}}
  */
-function prosesScan({ kode, jenisId, user, metode = 'scan' }) {
-  const d = getDb();
-  const jenis = jenisAktifById(jenisId);
+async function prosesScan({ kode, jenisId, user, metode = 'scan' }) {
+  const jenis = await jenisAktifById(jenisId);
   if (!jenis) {
     return {
       status: 'ditolak',
@@ -102,13 +144,19 @@ function prosesScan({ kode, jenisId, user, metode = 'scan' }) {
     };
   }
 
-  const jedaGanda = getNumberSetting('jeda_duplikat_detik', 5) * 1000;
+  const jedaGanda = (await getNumberSetting('jeda_duplikat_detik', 5)) * 1000;
 
-  const jalankan = d.transaction(() => {
-    const peserta = cariPeserta(kode);
+  const conn = await getConnection();
+  try {
+    await conn.beginTransaction();
+
+    // Mengunci baris peserta sebagai titik serialisasi: pemindaian bersamaan
+    // untuk peserta yang sama akan antre di sini sampai transaksi ini selesai.
+    const peserta = await cariPesertaTx(conn, kode);
 
     if (!peserta) {
-      catat({ status: 'ditolak', alasan: 'Barcode tidak terdaftar', jenis, peserta: null, kode, user });
+      await catatTx(conn, { status: 'ditolak', alasan: 'Barcode tidak terdaftar', jenis, peserta: null, kode, user });
+      await conn.commit();
       return {
         status: 'ditolak',
         pesan: 'Barcode tidak terdaftar. Peserta belum terdaftar pada event ini.',
@@ -117,7 +165,8 @@ function prosesScan({ kode, jenisId, user, metode = 'scan' }) {
     }
 
     if (!peserta.aktif) {
-      catat({ status: 'ditolak', alasan: 'Peserta tidak aktif', jenis, peserta, kode, user });
+      await catatTx(conn, { status: 'ditolak', alasan: 'Peserta tidak aktif', jenis, peserta, kode, user });
+      await conn.commit();
       return {
         status: 'ditolak',
         pesan: `Transaksi ditolak: peserta ${peserta.nama} berstatus tidak aktif.`,
@@ -125,20 +174,20 @@ function prosesScan({ kode, jenisId, user, metode = 'scan' }) {
       };
     }
 
-    const batas = batasEfektif(peserta.id, jenis.id, jenis.batas_default);
-    const dipakai = jumlahTerpakai(peserta.id, jenis.id);
+    const batas = await batasEfektifTx(conn, peserta.id, jenis.id, jenis.batas_default);
+    const dipakai = await jumlahTerpakaiTx(conn, peserta.id, jenis.id);
 
     // Pencegahan transaksi ganda akibat pemindaian berulang dalam waktu singkat.
     if (jedaGanda > 0) {
-      const terakhir = d
-        .prepare(
-          `SELECT waktu FROM transaksi
-            WHERE peserta_id = ? AND jenis_id = ? AND status = 'berhasil'
-            ORDER BY id DESC LIMIT 1`,
-        )
-        .get(peserta.id, jenis.id);
+      const [terakhirRows] = await conn.query(
+        `SELECT waktu FROM transaksi
+          WHERE peserta_id = ? AND jenis_id = ? AND status = 'berhasil'
+          ORDER BY id DESC LIMIT 1`,
+        [peserta.id, jenis.id],
+      );
+      const terakhir = terakhirRows[0];
       if (terakhir && Date.now() - new Date(terakhir.waktu).getTime() <= jedaGanda) {
-        catat({
+        await catatTx(conn, {
           status: 'ganda',
           alasan: 'Pemindaian ganda dalam waktu singkat',
           jenis,
@@ -148,6 +197,7 @@ function prosesScan({ kode, jenisId, user, metode = 'scan' }) {
           batas,
           sisaSetelah: Math.max(batas - dipakai, 0),
         });
+        await conn.commit();
         return {
           status: 'ganda',
           pesan: 'Pemindaian ganda terdeteksi. Transaksi ini sudah tercatat beberapa detik lalu, kuota tidak dikurangi lagi.',
@@ -157,7 +207,7 @@ function prosesScan({ kode, jenisId, user, metode = 'scan' }) {
     }
 
     if (batas <= 0) {
-      catat({
+      await catatTx(conn, {
         status: 'ditolak',
         alasan: 'Kuota tidak tersedia (batas 0)',
         jenis,
@@ -167,6 +217,7 @@ function prosesScan({ kode, jenisId, user, metode = 'scan' }) {
         batas,
         sisaSetelah: 0,
       });
+      await conn.commit();
       return {
         status: 'ditolak',
         pesan: `Transaksi ditolak: ${peserta.nama} tidak memiliki kuota untuk ${jenis.nama}.`,
@@ -175,7 +226,7 @@ function prosesScan({ kode, jenisId, user, metode = 'scan' }) {
     }
 
     if (dipakai >= batas) {
-      catat({
+      await catatTx(conn, {
         status: 'ditolak',
         alasan: 'Kuota habis',
         jenis,
@@ -185,6 +236,7 @@ function prosesScan({ kode, jenisId, user, metode = 'scan' }) {
         batas,
         sisaSetelah: 0,
       });
+      await conn.commit();
       return {
         status: 'ditolak',
         pesan: `Kuota habis. ${jenis.nama} untuk ${peserta.nama} sudah dipakai ${dipakai} dari ${batas} kali.`,
@@ -194,7 +246,7 @@ function prosesScan({ kode, jenisId, user, metode = 'scan' }) {
 
     const urutanKe = dipakai + 1;
     const sisaSetelah = batas - urutanKe;
-    catat({
+    await catatTx(conn, {
       status: 'berhasil',
       alasan: metode === 'manual' ? 'Input manual nomor peserta' : null,
       jenis,
@@ -205,38 +257,42 @@ function prosesScan({ kode, jenisId, user, metode = 'scan' }) {
       urutanKe,
       sisaSetelah,
     });
+    await conn.commit();
     return {
       status: 'berhasil',
       pesan: `Berhasil. ${jenis.nama} tercatat untuk ${peserta.nama}.`,
       ...ringkas(peserta, jenis, batas, urutanKe),
     };
-  });
-
-  // .immediate() -> BEGIN IMMEDIATE: ambil kunci tulis sebelum membaca kuota.
-  return jalankan.immediate();
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
 }
 
 /** Ringkasan kuota semua jenis untuk satu peserta (dipakai halaman scan & detail). */
-function ringkasanKuotaPeserta(pesertaId) {
-  const d = getDb();
-  const jenis = d.prepare('SELECT * FROM jenis_transaksi WHERE aktif = 1 ORDER BY urutan, id').all();
-  return jenis.map((j) => {
-    const batas = batasEfektif(pesertaId, j.id, j.batas_default);
-    const dipakai = jumlahTerpakai(pesertaId, j.id);
-    return {
+async function ringkasanKuotaPeserta(pesertaId) {
+  const jenis = await query('SELECT * FROM jenis_transaksi WHERE aktif = 1 ORDER BY urutan, id');
+  const out = [];
+  for (const j of jenis) {
+    const batas = await batasEfektif(pesertaId, j.id, j.batas_default);
+    const dipakai = await jumlahTerpakai(pesertaId, j.id);
+    const khususRows = await query(
+      'SELECT 1 AS x FROM kuota_peserta WHERE peserta_id = ? AND jenis_id = ?',
+      [pesertaId, j.id],
+    );
+    out.push({
       jenisId: j.id,
       kode: j.kode,
       nama: j.nama,
       batas,
       terpakai: dipakai,
       sisa: Math.max(batas - dipakai, 0),
-      khusus: d
-        .prepare('SELECT 1 AS x FROM kuota_peserta WHERE peserta_id = ? AND jenis_id = ?')
-        .get(pesertaId, j.id)
-        ? true
-        : false,
-    };
-  });
+      khusus: khususRows.length ? true : false,
+    });
+  }
+  return out;
 }
 
 module.exports = {

@@ -11,10 +11,10 @@
  */
 
 const express = require('express');
-const { getDb, insert, update } = require('../db');
+const { query, insert, update, getConnection } = require('../db');
 const { requireAuth, requireRole } = require('../auth');
 const { logAudit } = require('../audit');
-const { asyncHandler, nowIso, tanggalLokal } = require('../util');
+const { asyncHandler, nowIso, tanggalLokal, awalHariLokalIso } = require('../util');
 
 const router = express.Router();
 
@@ -22,34 +22,31 @@ const router = express.Router();
 router.get(
   '/',
   requireAuth,
-  asyncHandler((req, res) => {
-    const db = getDb();
-    const rows = db
-      .prepare(
-        `SELECT j.*,
-                (SELECT COUNT(*) FROM kuota_peserta k WHERE k.jenis_id = j.id) AS jumlah_override,
-                (SELECT COUNT(*) FROM transaksi t WHERE t.jenis_id = j.id AND t.status = 'berhasil') AS total_terpakai,
-                (SELECT COUNT(*) FROM transaksi t WHERE t.jenis_id = j.id AND t.status = 'ditolak') AS total_ditolak
-           FROM jenis_transaksi j
-          ORDER BY j.urutan, j.id`,
-      )
-      .all();
-
-    // Pemakaian hari ini (tanggal lokal panitia, bukan UTC).
-    const perHariIni = new Map(
-      db
-        .prepare(
-          `SELECT jenis_id, COUNT(*) AS c FROM transaksi
-            WHERE status = 'berhasil' AND substr(datetime(waktu, 'localtime'), 1, 10) = ?
-            GROUP BY jenis_id`,
-        )
-        .all(tanggalLokal())
-        .map((r) => [r.jenis_id, r.c]),
+  asyncHandler(async (req, res) => {
+    const rows = await query(
+      `SELECT j.*,
+              (SELECT COUNT(*) FROM kuota_peserta k WHERE k.jenis_id = j.id) AS jumlah_override,
+              (SELECT COUNT(*) FROM transaksi t WHERE t.jenis_id = j.id AND t.status = 'berhasil') AS total_terpakai,
+              (SELECT COUNT(*) FROM transaksi t WHERE t.jenis_id = j.id AND t.status = 'ditolak') AS total_ditolak
+         FROM jenis_transaksi j
+        ORDER BY j.urutan, j.id`,
     );
 
-    const totalPesertaAktif = db
-      .prepare('SELECT COUNT(*) AS c FROM peserta WHERE aktif = 1')
-      .get().c;
+    // Pemakaian hari ini (tanggal lokal panitia, bukan UTC) via rentang ISO.
+    const perHariIni = new Map(
+      (
+        await query(
+          `SELECT jenis_id, COUNT(*) AS c FROM transaksi
+            WHERE status = 'berhasil' AND waktu >= ? AND waktu < ?
+            GROUP BY jenis_id`,
+          [awalHariLokalIso(0), awalHariLokalIso(1)],
+        )
+      ).map((r) => [r.jenis_id, r.c]),
+    );
+
+    const totalPesertaAktif = (
+      await query('SELECT COUNT(*) AS c FROM peserta WHERE aktif = 1')
+    )[0].c;
 
     const jenis = rows.map((j) => ({
       ...j,
@@ -105,15 +102,14 @@ router.post(
   '/',
   requireAuth,
   requireRole('admin'),
-  asyncHandler((req, res) => {
+  asyncHandler(async (req, res) => {
     const { out, errors } = validasiJenis(req.body || {});
     if (errors.length) return res.status(400).json({ error: errors.join(' ') });
 
-    const db = getDb();
-    if (db.prepare('SELECT 1 AS x FROM jenis_transaksi WHERE kode = ?').get(out.kode)) {
+    if ((await query('SELECT 1 AS x FROM jenis_transaksi WHERE kode = ?', [out.kode])).length) {
       return res.status(409).json({ error: `Kode "${out.kode}" sudah dipakai.` });
     }
-    const id = insert('jenis_transaksi', {
+    const id = await insert('jenis_transaksi', {
       kode: out.kode,
       nama: out.nama,
       batas_default: out.batas_default ?? 1,
@@ -123,7 +119,7 @@ router.post(
       updated_at: nowIso(),
       updated_by: req.user.id,
     });
-    logAudit({
+    await logAudit({
       user: req.user,
       aksi: 'jenis.tambah',
       entitas: 'jenis_transaksi',
@@ -148,9 +144,8 @@ router.post(
   '/pilih',
   requireAuth,
   requireRole('admin'),
-  asyncHandler((req, res) => {
-    const db = getDb();
-    const semua = db.prepare('SELECT id, kode, nama, aktif FROM jenis_transaksi ORDER BY urutan, id').all();
+  asyncHandler(async (req, res) => {
+    const semua = await query('SELECT id, kode, nama, aktif FROM jenis_transaksi ORDER BY urutan, id');
     if (!semua.length) {
       return res.status(400).json({ error: 'Belum ada jenis transaksi. Tambahkan dulu pada langkah 1.' });
     }
@@ -178,17 +173,27 @@ router.post(
     const dinyalakan = [];
     const dimatikan = [];
 
-    const jalankan = db.transaction(() => {
+    const conn = await getConnection();
+    try {
+      await conn.beginTransaction();
       for (const j of semua) {
         const harusAktif = dipilih.has(j.id) ? 1 : 0;
         if (j.aktif === harusAktif) continue;
-        update('jenis_transaksi', j.id, { aktif: harusAktif, updated_at: waktu, updated_by: req.user.id });
+        await conn.query(
+          'UPDATE jenis_transaksi SET aktif = ?, updated_at = ?, updated_by = ? WHERE id = ?',
+          [harusAktif, waktu, req.user.id, j.id],
+        );
         (harusAktif ? dinyalakan : dimatikan).push(j.nama);
       }
-    });
-    jalankan.immediate();
+      await conn.commit();
+    } catch (err) {
+      await conn.rollback();
+      conn.release();
+      throw err;
+    }
+    conn.release();
 
-    logAudit({
+    await logAudit({
       user: req.user,
       aksi: 'jenis.pilih',
       entitas: 'jenis_transaksi',
@@ -209,23 +214,22 @@ router.put(
   '/:id',
   requireAuth,
   requireRole('admin'),
-  asyncHandler((req, res) => {
+  asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
-    const db = getDb();
-    const ada = db.prepare('SELECT * FROM jenis_transaksi WHERE id = ?').get(id);
+    const ada = (await query('SELECT * FROM jenis_transaksi WHERE id = ?', [id]))[0];
     if (!ada) return res.status(404).json({ error: 'Jenis transaksi tidak ditemukan.' });
 
     const { out, errors } = validasiJenis(req.body || {}, { partial: true });
     if (errors.length) return res.status(400).json({ error: errors.join(' ') });
     if (out.kode && out.kode !== ada.kode) {
-      if (db.prepare('SELECT 1 AS x FROM jenis_transaksi WHERE kode = ? AND id <> ?').get(out.kode, id)) {
+      if ((await query('SELECT 1 AS x FROM jenis_transaksi WHERE kode = ? AND id <> ?', [out.kode, id])).length) {
         return res.status(409).json({ error: `Kode "${out.kode}" sudah dipakai.` });
       }
     }
     if (!Object.keys(out).length) return res.status(400).json({ error: 'Tidak ada perubahan.' });
 
-    update('jenis_transaksi', id, { ...out, updated_at: nowIso(), updated_by: req.user.id });
-    logAudit({
+    await update('jenis_transaksi', id, { ...out, updated_at: nowIso(), updated_by: req.user.id });
+    await logAudit({
       user: req.user,
       aksi: 'jenis.ubah',
       entitas: 'jenis_transaksi',
@@ -241,13 +245,12 @@ router.delete(
   '/:id',
   requireAuth,
   requireRole('admin'),
-  asyncHandler((req, res) => {
+  asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
-    const db = getDb();
-    const ada = db.prepare('SELECT * FROM jenis_transaksi WHERE id = ?').get(id);
+    const ada = (await query('SELECT * FROM jenis_transaksi WHERE id = ?', [id]))[0];
     if (!ada) return res.status(404).json({ error: 'Jenis transaksi tidak ditemukan.' });
-    update('jenis_transaksi', id, { aktif: 0, updated_at: nowIso(), updated_by: req.user.id });
-    logAudit({ user: req.user, aksi: 'jenis.nonaktif', entitas: 'jenis_transaksi', entitasId: id });
+    await update('jenis_transaksi', id, { aktif: 0, updated_at: nowIso(), updated_by: req.user.id });
+    await logAudit({ user: req.user, aksi: 'jenis.nonaktif', entitas: 'jenis_transaksi', entitasId: id });
     res.json({ ok: true });
   }),
 );

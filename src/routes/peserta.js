@@ -7,7 +7,7 @@
 
 const express = require('express');
 const ExcelJS = require('exceljs');
-const { getDb, insert, update, getSetting } = require('../db');
+const { query, insert, update, getSetting } = require('../db');
 const { requireAuth, requireRole } = require('../auth');
 const { logAudit } = require('../audit');
 const { asyncHandler, parsePaging, toInt, trimOrNull, daftarKategori, nowIso } = require('../util');
@@ -45,8 +45,7 @@ function validasiPeserta(body) {
 router.get(
   '/',
   ...adminOnly,
-  asyncHandler((req, res) => {
-    const db = getDb();
+  asyncHandler(async (req, res) => {
     const { page, perPage, offset } = parsePaging(req.query, 25);
     const q = trimOrNull(req.query.q);
     const kategori = trimOrNull(req.query.kategori);
@@ -66,23 +65,20 @@ router.get(
     else if (status === 'nonaktif') where.push('p.aktif = 0');
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
-    const total = db
-      .prepare(`SELECT COUNT(*) AS c FROM peserta p ${whereSql}`)
-      .get(...params).c;
+    const total = (await query(`SELECT COUNT(*) AS c FROM peserta p ${whereSql}`, params))[0].c;
 
-    const rows = db
-      .prepare(
-        `SELECT p.*,
-                (SELECT COUNT(*) FROM transaksi t WHERE t.peserta_id = p.id AND t.status = 'berhasil') AS total_transaksi
-           FROM peserta p ${whereSql}
-          ORDER BY p.nomor_peserta COLLATE NOCASE
-          LIMIT ? OFFSET ?`,
-      )
-      .all(...params, perPage, offset);
+    const rows = await query(
+      `SELECT p.*,
+              (SELECT COUNT(*) FROM transaksi t WHERE t.peserta_id = p.id AND t.status = 'berhasil') AS total_transaksi
+         FROM peserta p ${whereSql}
+        ORDER BY p.nomor_peserta
+        LIMIT ? OFFSET ?`,
+      [...params, perPage, offset],
+    );
 
     res.json({
       data: rows.map((p) => ({ ...p, aktif: !!p.aktif })),
-      kategori: daftarKategori(),
+      kategori: await daftarKategori(),
       page,
       perPage,
       total,
@@ -95,13 +91,12 @@ router.get(
 router.get(
   '/lookup',
   requireAuth,
-  asyncHandler((req, res) => {
+  asyncHandler(async (req, res) => {
     const kode = trimOrNull(req.query.kode);
     if (!kode) return res.status(400).json({ error: 'Kode barcode wajib diisi.' });
-    const db = getDb();
     const peserta =
-      db.prepare('SELECT * FROM peserta WHERE kode_barcode = ? COLLATE NOCASE').get(kode) ||
-      db.prepare('SELECT * FROM peserta WHERE nomor_peserta = ? COLLATE NOCASE').get(kode);
+      (await query('SELECT * FROM peserta WHERE kode_barcode = ? LIMIT 1', [kode]))[0] ||
+      (await query('SELECT * FROM peserta WHERE nomor_peserta = ? LIMIT 1', [kode]))[0];
     if (!peserta) return res.status(404).json({ error: 'Barcode tidak terdaftar.' });
     res.json({
       peserta: {
@@ -111,7 +106,7 @@ router.get(
         kategori: peserta.kategori,
         aktif: !!peserta.aktif,
       },
-      kuota: ringkasanKuotaPeserta(peserta.id),
+      kuota: await ringkasanKuotaPeserta(peserta.id),
     });
   }),
 );
@@ -119,7 +114,7 @@ router.get(
 router.get(
   '/kategori',
   ...adminOnly,
-  asyncHandler((req, res) => res.json({ kategori: daftarKategori() })),
+  asyncHandler(async (req, res) => res.json({ kategori: await daftarKategori() })),
 );
 
 // ---------------------------------------------------------------------------
@@ -130,7 +125,7 @@ router.get(
   '/template.xlsx',
   ...adminOnly,
   asyncHandler(async (req, res) => {
-    const buffer = await buildTemplate(getSetting('nama_event', 'Event'));
+    const buffer = await buildTemplate(await getSetting('nama_event', 'Event'));
     res.setHeader(
       'Content-Disposition',
       'attachment; filename="template-import-peserta.xlsx"',
@@ -143,14 +138,11 @@ router.get(
   '/export.xlsx',
   ...adminOnly,
   asyncHandler(async (req, res) => {
-    const db = getDb();
-    const rows = db
-      .prepare(
-        `SELECT p.nomor_peserta, p.nama, p.kategori, p.kontak, p.kode_barcode, p.aktif,
-                (SELECT COUNT(*) FROM transaksi t WHERE t.peserta_id = p.id AND t.status = 'berhasil') AS total_transaksi
-           FROM peserta p ORDER BY p.nomor_peserta COLLATE NOCASE`,
-      )
-      .all();
+    const rows = await query(
+      `SELECT p.nomor_peserta, p.nama, p.kategori, p.kontak, p.kode_barcode, p.aktif,
+              (SELECT COUNT(*) FROM transaksi t WHERE t.peserta_id = p.id AND t.status = 'berhasil') AS total_transaksi
+         FROM peserta p ORDER BY p.nomor_peserta`,
+    );
     const wb = new ExcelJS.Workbook();
     sheetDariData(
       wb,
@@ -203,8 +195,8 @@ router.post(
       return res.status(400).json({ error: 'Tidak ada baris data yang bisa diimpor.' });
     }
 
-    const hasil = validasiDanImpor(parsed.baris, { mode, user: req.user });
-    logAudit({
+    const hasil = await validasiDanImpor(parsed.baris, { mode, user: req.user });
+    await logAudit({
       user: req.user,
       aksi: 'peserta.impor',
       entitas: 'peserta',
@@ -233,15 +225,25 @@ router.post(
 // Barcode
 // ---------------------------------------------------------------------------
 
-function ambilPeserta(id) {
-  return getDb().prepare('SELECT * FROM peserta WHERE id = ?').get(id);
+async function ambilPeserta(id) {
+  return (await query('SELECT * FROM peserta WHERE id = ?', [id]))[0] || null;
+}
+
+/** Buat kode barcode unik via pool query (callback isTaken barcode.js sinkron). */
+async function buatKodeUnik(nomor) {
+  for (let i = 0; i < 25; i += 1) {
+    const kode = generateKodeBarcode(nomor, () => false);
+    const rows = await query('SELECT 1 AS x FROM peserta WHERE kode_barcode = ? LIMIT 1', [kode]);
+    if (!rows.length) return kode;
+  }
+  return generateKodeBarcode(`${nomor}-${Date.now()}`, () => false);
 }
 
 router.get(
   '/:id/barcode.svg',
   ...adminOnly,
-  asyncHandler((req, res) => {
-    const p = ambilPeserta(toInt(req.params.id, -1));
+  asyncHandler(async (req, res) => {
+    const p = await ambilPeserta(toInt(req.params.id, -1));
     if (!p) return res.status(404).send('Peserta tidak ditemukan');
     const svg = barcodeSvg(p.kode_barcode, { scale: req.query.scale, height: req.query.tinggi });
     res.type('image/svg+xml');
@@ -254,7 +256,7 @@ router.get(
   '/:id/barcode.png',
   ...adminOnly,
   asyncHandler(async (req, res) => {
-    const p = ambilPeserta(toInt(req.params.id, -1));
+    const p = await ambilPeserta(toInt(req.params.id, -1));
     if (!p) return res.status(404).send('Peserta tidak ditemukan');
     const buffer = await barcodePng(p.kode_barcode, { scale: req.query.scale, height: req.query.tinggi });
     res.type('image/png');
@@ -270,8 +272,7 @@ router.get(
 router.get(
   '/barcode/daftar',
   ...adminOnly,
-  asyncHandler((req, res) => {
-    const db = getDb();
+  asyncHandler(async (req, res) => {
     const q = trimOrNull(req.query.q);
     const kategori = trimOrNull(req.query.kategori);
     const params = [];
@@ -284,14 +285,13 @@ router.get(
       where.push('p.kategori = ?');
       params.push(kategori);
     }
-    const rows = db
-      .prepare(
-        `SELECT p.id, p.nomor_peserta, p.nama, p.kategori, p.kode_barcode
-           FROM peserta p WHERE ${where.join(' AND ')}
-          ORDER BY p.nomor_peserta COLLATE NOCASE`,
-      )
-      .all(...params);
-    res.json({ data: rows, kategori: daftarKategori() });
+    const rows = await query(
+      `SELECT p.id, p.nomor_peserta, p.nama, p.kategori, p.kode_barcode
+         FROM peserta p WHERE ${where.join(' AND ')}
+        ORDER BY p.nomor_peserta`,
+      params,
+    );
+    res.json({ data: rows, kategori: await daftarKategori() });
   }),
 );
 
@@ -302,13 +302,13 @@ router.get(
 router.get(
   '/:id/kuota',
   requireAuth,
-  asyncHandler((req, res) => {
+  asyncHandler(async (req, res) => {
     const id = toInt(req.params.id, -1);
-    const p = ambilPeserta(id);
+    const p = await ambilPeserta(id);
     if (!p) return res.status(404).json({ error: 'Peserta tidak ditemukan.' });
     res.json({
       peserta: { id: p.id, nomorPeserta: p.nomor_peserta, nama: p.nama, kategori: p.kategori },
-      kuota: ringkasanKuotaPeserta(id),
+      kuota: await ringkasanKuotaPeserta(id),
     });
   }),
 );
@@ -316,29 +316,26 @@ router.get(
 router.get(
   '/:id',
   ...adminOnly,
-  asyncHandler((req, res) => {
-    const p = ambilPeserta(toInt(req.params.id, -1));
+  asyncHandler(async (req, res) => {
+    const p = await ambilPeserta(toInt(req.params.id, -1));
     if (!p) return res.status(404).json({ error: 'Peserta tidak ditemukan.' });
-    res.json({ peserta: { ...p, aktif: !!p.aktif }, kuota: ringkasanKuotaPeserta(p.id) });
+    res.json({ peserta: { ...p, aktif: !!p.aktif }, kuota: await ringkasanKuotaPeserta(p.id) });
   }),
 );
 
 router.post(
   '/',
   ...adminOnly,
-  asyncHandler((req, res) => {
+  asyncHandler(async (req, res) => {
     const { out, errors } = validasiPeserta(req.body || {});
     if (errors.length) return res.status(400).json({ error: errors.join(' ') });
 
-    const db = getDb();
-    if (db.prepare('SELECT 1 AS x FROM peserta WHERE nomor_peserta = ?').get(out.nomor_peserta)) {
+    if ((await query('SELECT 1 AS x FROM peserta WHERE nomor_peserta = ?', [out.nomor_peserta])).length) {
       return res.status(409).json({ error: `ID ganda: nomor peserta "${out.nomor_peserta}" sudah terdaftar.` });
     }
-    const kode = generateKodeBarcode(out.nomor_peserta, (k) =>
-      !!db.prepare('SELECT 1 AS x FROM peserta WHERE kode_barcode = ?').get(k),
-    );
+    const kode = await buatKodeUnik(out.nomor_peserta);
     const waktu = nowIso();
-    const id = insert('peserta', {
+    const id = await insert('peserta', {
       nomor_peserta: out.nomor_peserta,
       nama: out.nama,
       kategori: out.kategori,
@@ -350,7 +347,7 @@ router.post(
       created_by: req.user.id,
       updated_by: req.user.id,
     });
-    logAudit({ user: req.user, aksi: 'peserta.tambah', entitas: 'peserta', entitasId: id, detail: out });
+    await logAudit({ user: req.user, aksi: 'peserta.tambah', entitas: 'peserta', entitasId: id, detail: out });
     res.status(201).json({ id, kode_barcode: kode });
   }),
 );
@@ -358,21 +355,20 @@ router.post(
 router.put(
   '/:id',
   ...adminOnly,
-  asyncHandler((req, res) => {
+  asyncHandler(async (req, res) => {
     const id = toInt(req.params.id, -1);
-    const db = getDb();
-    const ada = ambilPeserta(id);
+    const ada = await ambilPeserta(id);
     if (!ada) return res.status(404).json({ error: 'Peserta tidak ditemukan.' });
 
     const { out, errors } = validasiPeserta({ ...ada, ...req.body });
     if (errors.length) return res.status(400).json({ error: errors.join(' ') });
     if (out.nomor_peserta.toLowerCase() !== ada.nomor_peserta.toLowerCase()) {
-      if (db.prepare('SELECT 1 AS x FROM peserta WHERE nomor_peserta = ? AND id <> ?').get(out.nomor_peserta, id)) {
+      if ((await query('SELECT 1 AS x FROM peserta WHERE nomor_peserta = ? AND id <> ?', [out.nomor_peserta, id])).length) {
         return res.status(409).json({ error: `ID ganda: nomor peserta "${out.nomor_peserta}" sudah terdaftar.` });
       }
     }
-    update('peserta', id, { ...out, updated_at: nowIso(), updated_by: req.user.id });
-    logAudit({
+    await update('peserta', id, { ...out, updated_at: nowIso(), updated_by: req.user.id });
+    await logAudit({
       user: req.user,
       aksi: 'peserta.ubah',
       entitas: 'peserta',
@@ -390,24 +386,23 @@ router.put(
 router.delete(
   '/:id',
   ...adminOnly,
-  asyncHandler((req, res) => {
+  asyncHandler(async (req, res) => {
     const id = toInt(req.params.id, -1);
-    const db = getDb();
-    const ada = ambilPeserta(id);
+    const ada = await ambilPeserta(id);
     if (!ada) return res.status(404).json({ error: 'Peserta tidak ditemukan.' });
 
-    const dipakai = db.prepare('SELECT COUNT(*) AS c FROM transaksi WHERE peserta_id = ?').get(id).c;
+    const dipakai = (await query('SELECT COUNT(*) AS c FROM transaksi WHERE peserta_id = ?', [id]))[0].c;
     if (dipakai > 0) {
-      update('peserta', id, { aktif: 0, updated_at: nowIso(), updated_by: req.user.id });
-      logAudit({ user: req.user, aksi: 'peserta.nonaktif', entitas: 'peserta', entitasId: id });
+      await update('peserta', id, { aktif: 0, updated_at: nowIso(), updated_by: req.user.id });
+      await logAudit({ user: req.user, aksi: 'peserta.nonaktif', entitas: 'peserta', entitasId: id });
       return res.json({
         ok: true,
         mode: 'nonaktif',
         pesan: `Peserta ${ada.nama} dinonaktifkan (memiliki ${dipakai} riwayat transaksi). Barcode-nya tidak dapat dipakai lagi.`,
       });
     }
-    db.prepare('DELETE FROM peserta WHERE id = ?').run(id);
-    logAudit({ user: req.user, aksi: 'peserta.hapus', entitas: 'peserta', entitasId: id, detail: ada.nomor_peserta });
+    await query('DELETE FROM peserta WHERE id = ?', [id]);
+    await logAudit({ user: req.user, aksi: 'peserta.hapus', entitas: 'peserta', entitasId: id, detail: ada.nomor_peserta });
     res.json({ ok: true, mode: 'hapus', pesan: `Peserta ${ada.nama} dihapus.` });
   }),
 );
@@ -416,16 +411,13 @@ router.delete(
 router.post(
   '/:id/reset-barcode',
   ...adminOnly,
-  asyncHandler((req, res) => {
+  asyncHandler(async (req, res) => {
     const id = toInt(req.params.id, -1);
-    const db = getDb();
-    const ada = ambilPeserta(id);
+    const ada = await ambilPeserta(id);
     if (!ada) return res.status(404).json({ error: 'Peserta tidak ditemukan.' });
-    const kodeBaru = generateKodeBarcode(ada.nomor_peserta, (k) =>
-      !!db.prepare('SELECT 1 AS x FROM peserta WHERE kode_barcode = ?').get(k),
-    );
-    update('peserta', id, { kode_barcode: kodeBaru, updated_at: nowIso(), updated_by: req.user.id });
-    logAudit({
+    const kodeBaru = await buatKodeUnik(ada.nomor_peserta);
+    await update('peserta', id, { kode_barcode: kodeBaru, updated_at: nowIso(), updated_by: req.user.id });
+    await logAudit({
       user: req.user,
       aksi: 'peserta.reset_barcode',
       entitas: 'peserta',

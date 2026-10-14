@@ -11,8 +11,12 @@
 
 const path = require('node:path');
 const express = require('express');
-const { getDb, DB_PATH, getSetting, setSetting } = require('./db');
+const { initDb, query, getPool, getSetting, setSetting } = require('./db');
 const { ensureSeed, seedContoh } = require('./seed');
+
+const DB_HOST = process.env.DB_HOST || '127.0.0.1';
+const DB_PORT = Number(process.env.DB_PORT) || 3306;
+const DB_NAME = process.env.DB_NAME || 'event_barcode';
 
 const ROOT = path.join(__dirname, '..');
 const PORT = Number(process.env.PORT || 3000);
@@ -85,8 +89,12 @@ app.use('/api/kuota', require('./routes/kuota'));
 app.use('/api', require('./routes/admin'));
 
 // --- Info publik (dipakai layar masuk) ------------------------------------
-app.get('/api/info', (req, res) => {
-  res.json({ nama_event: require('./db').getSetting('nama_event', 'Event') });
+app.get('/api/info', async (req, res, next) => {
+  try {
+    res.json({ nama_event: await getSetting('nama_event', 'Event') });
+  } catch (err) {
+    next(err);
+  }
 });
 
 // --- Pustaka pemindai kamera (disajikan dari node_modules) -----------------
@@ -110,21 +118,23 @@ app.use((err, req, res, next) => {
   });
 });
 
-function start() {
-  const db = getDb();
-  // Bersihkan sesi kedaluwarsa saat aplikasi dijalankan.
-  db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(new Date().toISOString());
+async function start() {
+  // Siapkan database & tabel PALING AWAL sebelum menerima permintaan.
+  await initDb();
 
-  ensureSeed();
-  const adaPeserta = db.prepare('SELECT COUNT(*) AS c FROM peserta').get().c;
-  const flagContoh = getSetting('data_contoh', null);
+  // Bersihkan sesi kedaluwarsa saat aplikasi dijalankan.
+  await query('DELETE FROM sessions WHERE expires_at < ?', [new Date().toISOString()]);
+
+  await ensureSeed();
+  const adaPeserta = (await query('SELECT COUNT(*) AS c FROM peserta'))[0].c;
+  const flagContoh = await getSetting('data_contoh', null);
   if (flagContoh === null) {
     // Hanya sekali: basis data masih kosong dan belum pernah menyimpan penanda.
     if (adaPeserta === 0) {
-      const hasil = seedContoh();
+      const hasil = await seedContoh();
       console.log(`Data contoh ditambahkan: ${hasil.ditambahkan} peserta.`);
     }
-    setSetting('data_contoh', '1');
+    await setSetting('data_contoh', '1');
   } else if (adaPeserta === 0) {
     console.log(
       'Data contoh tidak dimuat ulang. Jalankan `npm run seed` bila ingin memakainya lagi.',
@@ -135,16 +145,16 @@ function start() {
     console.log('');
     console.log('  Aplikasi Barcode Peserta Event');
     console.log(`  Buka      : http://${HOST}:${PORT}`);
-    console.log(`  Database  : ${DB_PATH}`);
+    console.log(`  Database  : ${DB_HOST}:${DB_PORT}/${DB_NAME}`);
     console.log('  Login     : admin / admin123      (Admin)');
     console.log('              petugas / petugas123  (Petugas)');
     console.log('');
   });
 
   const tutup = () => {
-    server.close(() => {
+    server.close(async () => {
       try {
-        getDb().close();
+        await getPool().end();
       } catch {
         /* abaikan */
       }
@@ -157,6 +167,11 @@ function start() {
   return server;
 }
 
-if (require.main === module) start();
+if (require.main === module) {
+  start().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
 
 module.exports = { app, start };

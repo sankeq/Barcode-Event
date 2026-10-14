@@ -2,7 +2,7 @@
 
 /** Helper kecil yang dipakai di beberapa route. */
 
-const { getDb } = require('./db');
+const { query } = require('./db');
 
 /** Bungkus handler async agar error diteruskan ke middleware Express. */
 function asyncHandler(fn) {
@@ -65,14 +65,12 @@ function trimOrNull(v) {
 }
 
 /** Kategori unik untuk dropdown filter. */
-function daftarKategori() {
-  return getDb()
-    .prepare(
-      `SELECT DISTINCT kategori FROM peserta
-        WHERE kategori IS NOT NULL AND TRIM(kategori) <> '' ORDER BY kategori COLLATE NOCASE`,
-    )
-    .all()
-    .map((r) => r.kategori);
+async function daftarKategori() {
+  const rows = await query(
+    `SELECT DISTINCT kategori FROM peserta
+      WHERE kategori IS NOT NULL AND TRIM(kategori) <> '' ORDER BY kategori`,
+  );
+  return rows.map((r) => r.kategori);
 }
 
 module.exports = {
