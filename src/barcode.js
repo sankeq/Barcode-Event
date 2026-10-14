@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Pembuatan barcode peserta (Code 128) memakai bwip-js.
+ * Pembuatan barcode peserta (QR Code — barcode kotak/2D) memakai bwip-js.
  * SVG bersifat vektor sehingga hasil cetak tetap tajam di ukuran kecil.
  */
 
@@ -36,22 +36,23 @@ function generateKodeBarcode(nomorPeserta, isTaken) {
   return `EVT-${slugNomor(nomorPeserta)}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
 }
 
+// QR Code = barcode kotak (2D). Berbeda dari Code 128, QR bersifat simetris:
+// tidak ada tinggi batang maupun teks di bawahnya, jadi opsi height/includetext
+// tidak dipakai. `eclevel: 'M'` memberi koreksi kesalahan sedang agar tetap
+// terbaca walau tercetak kecil atau sedikit kotor.
 const DEFAULTS = {
-  bcid: 'code128',
-  scale: 3,
-  height: 12,
-  includetext: true,
-  textxalign: 'center',
-  textsize: 9,
-  paddingwidth: 4,
-  paddingheight: 2,
+  bcid: 'qrcode',
+  scale: 4,
+  eclevel: 'M',
+  paddingwidth: 1,
+  paddingheight: 1,
   backgroundcolor: 'FFFFFF',
 };
 
 function normalizeOptions(opts = {}) {
-  const scale = Math.min(Math.max(Number(opts.scale) || DEFAULTS.scale, 1), 8);
-  const height = Math.min(Math.max(Number(opts.height) || DEFAULTS.height, 6), 40);
-  return { ...DEFAULTS, scale, height };
+  // Parameter `height`/`tinggi` lama tidak berlaku untuk QR; abaikan dengan aman.
+  const scale = Math.min(Math.max(Number(opts.scale) || DEFAULTS.scale, 1), 10);
+  return { ...DEFAULTS, scale };
 }
 
 function barcodeSvg(text, opts) {

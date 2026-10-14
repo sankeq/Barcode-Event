@@ -329,8 +329,8 @@ export function dialogBarcode(id, setelah) {
                 <div style="font-weight:700">${esc(state.pengaturan.nama_event || 'Event')}</div>
                 <div style="font-size:1.15rem;font-weight:800;margin:.15rem 0">${esc(p.nama)}</div>
                 <div class="muted kecil">${esc(p.nomor_peserta)} &middot; ${esc(p.kategori || 'Tanpa kategori')}</div>
-                <img src="/api/peserta/${p.id}/barcode.svg?scale=3&tinggi=14" alt="Barcode ${esc(p.nomor_peserta)}"
-                     style="max-width:100%;margin:.5rem 0" />
+                <img src="/api/peserta/${p.id}/barcode.svg?scale=4" alt="Barcode ${esc(p.nomor_peserta)}"
+                     style="width:180px;height:180px;max-width:100%;margin:.5rem auto;display:block;image-rendering:pixelated" />
                 <div class="kotak-kode">${esc(p.kode_barcode)}</div>
               </div>
               <div class="aksi-baris" style="justify-content:center;margin-top:.8rem">
@@ -370,14 +370,14 @@ export function dialogBarcode(id, setelah) {
                   .event { font-size:9pt; font-weight:600; color:#0f766e; }
                   .nama { font-size:13pt; font-weight:800; margin-top:1mm; }
                   .nomor { font-size:9pt; color:#475569; }
-                  img { width:100%; margin-top:auto; }
+                  img { width:28mm; height:28mm; margin-top:auto; image-rendering:pixelated; }
                   .kode { font-family: ui-monospace, monospace; font-size:8pt; margin-top:1mm; }
                 </style></head><body>
                 <div class="kartu">
                   <div class="event">${esc(state.pengaturan.nama_event || 'Event')}</div>
                   <div class="nama">${esc(p.nama)}</div>
                   <div class="nomor">${esc(p.nomor_peserta)} &middot; ${esc(p.kategori || '-')}</div>
-                  <img src="${location.origin}/api/peserta/${p.id}/barcode.svg?scale=3&tinggi=13" alt="" />
+                  <img src="${location.origin}/api/peserta/${p.id}/barcode.svg?scale=4" alt="" />
                   <div class="kode">${esc(p.kode_barcode)}</div>
                 </div>
                 <script>window.onload=()=>setTimeout(()=>window.print(),400);<\/script>

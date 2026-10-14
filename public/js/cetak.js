@@ -50,7 +50,7 @@ async function muat() {
           <div class="event">${esc(namaEvent)}</div>
           <div class="nama">${esc(p.nama)}</div>
           <div class="nomor">${esc(p.nomor_peserta)}${p.kategori ? ` · ${esc(p.kategori)}` : ''}</div>
-          <img src="/api/peserta/${p.id}/barcode.svg?scale=3&tinggi=13" alt="Barcode ${esc(p.nomor_peserta)}" />
+          <img src="/api/peserta/${p.id}/barcode.svg?scale=4" alt="Barcode ${esc(p.nomor_peserta)}" />
           <div class="kode">${esc(p.kode_barcode)}</div>
         </div>`,
       )

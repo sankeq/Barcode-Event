@@ -249,7 +249,7 @@ export default {
         scanner = new Html5Qrcode('kamera-pembaca');
         await scanner.start(
           { facingMode: 'environment' },
-          { fps: 10, qrbox: { width: 280, height: 160 } },
+          { fps: 10, qrbox: { width: 240, height: 240 } },
           (teks) => proses(teks, 'kamera'),
           () => {
             /* abaikan galat per-frame */
