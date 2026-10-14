@@ -106,6 +106,7 @@ export default {
                           <button class="tombol kecil" data-barcode="${p.id}">Barcode</button>
                           <button class="tombol kecil" data-kuota="${p.id}">Batas</button>
                           <button class="tombol kecil" data-ubah="${p.id}">Ubah</button>
+                          <button class="tombol kecil" data-status="${p.id}" data-aktif="${p.aktif ? 1 : 0}">${p.aktif ? 'Nonaktifkan' : 'Aktifkan'}</button>
                           <button class="tombol kecil bahaya" data-hapus="${p.id}">Hapus</button>
                         </div>
                       </td>
@@ -130,6 +131,11 @@ export default {
         );
         refs.daftar.querySelectorAll('[data-ubah]').forEach((b) =>
           b.addEventListener('click', () => dialogForm(Number(b.dataset.ubah), muat)),
+        );
+        refs.daftar.querySelectorAll('[data-status]').forEach((b) =>
+          b.addEventListener('click', () =>
+            ubahStatusPeserta(Number(b.dataset.status), b.dataset.aktif === '1', muat),
+          ),
         );
         refs.daftar.querySelectorAll('[data-hapus]').forEach((b) =>
           b.addEventListener('click', () => hapusPeserta(Number(b.dataset.hapus), muat)),
@@ -289,12 +295,31 @@ export function dialogForm(id, setelahSimpan) {
   );
 }
 
+async function ubahStatusPeserta(id, aktifSekarang, setelah) {
+  const jadiAktif = !aktifSekarang;
+  const ya = await konfirmasi({
+    judul: jadiAktif ? 'Aktifkan peserta?' : 'Nonaktifkan peserta?',
+    pesan: jadiAktif
+      ? 'Peserta akan aktif kembali dan barcode-nya dapat dipindai.'
+      : 'Peserta dinonaktifkan. Barcode-nya tidak dapat dipindai sampai diaktifkan lagi. Riwayat transaksi tetap tersimpan.',
+    tombol: jadiAktif ? 'Aktifkan' : 'Nonaktifkan',
+  });
+  if (!ya) return;
+  try {
+    await api.put(`/api/peserta/${id}`, { aktif: jadiAktif });
+    sukses(jadiAktif ? 'Peserta diaktifkan.' : 'Peserta dinonaktifkan.');
+    setelah();
+  } catch (err) {
+    galat(err.message);
+  }
+}
+
 async function hapusPeserta(id, setelah) {
   const ya = await konfirmasi({
-    judul: 'Hapus peserta?',
+    judul: 'Hapus total peserta?',
     pesan:
-      'Peserta yang sudah memiliki riwayat transaksi hanya akan dinonaktifkan agar laporan tetap utuh.',
-    tombol: 'Hapus',
+      'Peserta akan dihapus total beserta SELURUH riwayat transaksinya. Data yang hilang tidak bisa dikembalikan dan angka laporannya ikut hilang. Lanjutkan?',
+    tombol: 'Hapus total',
   });
   if (!ya) return;
   try {

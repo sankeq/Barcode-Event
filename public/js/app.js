@@ -221,6 +221,12 @@ function pasangPeristiwa() {
           username: data.get('username'),
           password: data.get('password'),
         });
+        // Respons login WAJIB berisi objek user. Bila tidak (mis. respons
+        // terpotong/terbungkus proxy atau versi berkas lama), tampilkan pesan
+        // jelas alih-alih crash saat membaca r.user.nama.
+        if (!r || !r.user) {
+          throw new Error('Respons masuk tidak valid dari server. Coba muat ulang halaman; bila berlanjut, periksa konfigurasi server.');
+        }
         state.pengguna = r.user;
         form.reset();
         await muatPengaturan();

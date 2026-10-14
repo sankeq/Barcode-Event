@@ -20,12 +20,16 @@ const ROOT = path.join(__dirname, '..');
  * di-parse (new URL) dan menang atas variabel individual.
  */
 function bacaConfig() {
+  // Dukung dua gaya penamaan variabel sekaligus:
+  //  - gaya aplikasi ini: DB_USER, DB_NAME
+  //  - gaya Laravel/cPanel: DB_USERNAME, DB_DATABASE
+  // Yang gaya aplikasi diprioritaskan bila keduanya diisi.
   const cfg = {
     host: process.env.DB_HOST || '127.0.0.1',
     port: Number(process.env.DB_PORT) || 3306,
-    user: process.env.DB_USER || 'root',
+    user: process.env.DB_USER || process.env.DB_USERNAME || 'root',
     password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'event_barcode',
+    database: process.env.DB_NAME || process.env.DB_DATABASE || 'event_barcode',
   };
 
   if (process.env.DATABASE_URL) {
@@ -192,25 +196,51 @@ function getPool() {
  * CREATE DATABASE/TABLE memakai IF NOT EXISTS.
  */
 async function initDb() {
-  // (1) Koneksi sementara TANPA opsi database untuk membuat database bila
-  // belum ada, lalu ditutup.
-  const bootstrap = await mysql.createConnection({
-    host: CONFIG.host,
-    port: CONFIG.port,
-    user: CONFIG.user,
-    password: CONFIG.password,
-    charset: 'utf8mb4',
-  });
+  // (1) Coba konek LANGSUNG ke database target lebih dulu. Di hosting cPanel,
+  // database dibuat manual lewat panel "MySQL Databases" dan user MySQL
+  // umumnya TIDAK punya hak CREATE DATABASE. Jadi bila DB target sudah bisa
+  // dibuka, kita lewati langkah pembuatan database.
+  let dbSudahAda = false;
   try {
-    await bootstrap.query(
-      `CREATE DATABASE IF NOT EXISTS \`${CONFIG.database}\` ` +
-        'CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci',
-    );
-  } finally {
-    await bootstrap.end();
+    const cek = await mysql.createConnection({
+      host: CONFIG.host,
+      port: CONFIG.port,
+      user: CONFIG.user,
+      password: CONFIG.password,
+      database: CONFIG.database,
+      charset: 'utf8mb4',
+    });
+    await cek.end();
+    dbSudahAda = true;
+  } catch (err) {
+    // ER_BAD_DB_ERROR (1049) = database belum ada -> coba buat di langkah (2).
+    // Galat lain (akses ditolak, host tak terjangkau) dilempar apa adanya
+    // agar penyebab sebenarnya terlihat di log, bukan tertutup pesan lain.
+    if (err && err.code !== 'ER_BAD_DB_ERROR') throw err;
   }
 
-  // (2) Pool ke database target, lalu (3) jalankan tiap CREATE TABLE.
+  // (2) Bila database belum ada, baru coba buat lewat koneksi tanpa opsi
+  // database. Lingkungan tanpa hak CREATE DATABASE (cPanel) akan gagal di sini
+  // dengan pesan jelas; buat database lebih dulu lewat panel hosting.
+  if (!dbSudahAda) {
+    const bootstrap = await mysql.createConnection({
+      host: CONFIG.host,
+      port: CONFIG.port,
+      user: CONFIG.user,
+      password: CONFIG.password,
+      charset: 'utf8mb4',
+    });
+    try {
+      await bootstrap.query(
+        `CREATE DATABASE IF NOT EXISTS \`${CONFIG.database}\` ` +
+          'CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci',
+      );
+    } finally {
+      await bootstrap.end();
+    }
+  }
+
+  // (3) Pool ke database target, lalu (4) jalankan tiap CREATE TABLE.
   const p = getPool();
   for (const stmt of SCHEMA) {
     await p.query(stmt);

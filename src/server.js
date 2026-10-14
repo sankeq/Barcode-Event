@@ -10,6 +10,8 @@
  */
 
 const path = require('node:path');
+// Muat .env PALING AWAL agar konfigurasi DB terbaca sebelum db.js diinisialisasi.
+require('./env').muatEnv();
 const express = require('express');
 const { initDb, query, getPool, getSetting, setSetting } = require('./db');
 const { ensureSeed, seedContoh } = require('./seed');

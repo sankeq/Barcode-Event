@@ -6,6 +6,9 @@ data/
 *.db-wal
 *.db-shm
 
+# Kredensial lingkungan (jangan di-commit)
+.env
+
 # Berkas sementara
 *.log
 .DS_Store

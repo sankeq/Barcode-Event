@@ -7,7 +7,7 @@
 
 const express = require('express');
 const ExcelJS = require('exceljs');
-const { query, insert, update, getSetting } = require('../db');
+const { query, insert, update, getSetting, getConnection } = require('../db');
 const { requireAuth, requireRole } = require('../auth');
 const { logAudit } = require('../audit');
 const { asyncHandler, parsePaging, toInt, trimOrNull, daftarKategori, nowIso } = require('../util');
@@ -380,8 +380,16 @@ router.put(
 );
 
 /**
- * Hapus peserta. Bila sudah punya riwayat transaksi, hanya dinonaktifkan
- * agar laporan tetap akurat dan barcode lama tidak bisa dipakai lagi.
+ * Hapus peserta secara PERMANEN beserta SELURUH datanya.
+ *
+ * Semua riwayat transaksi peserta ikut dihapus (bukan dilepas kaitannya),
+ * karena FK transaksi.peserta_id memakai perilaku RESTRICT bawaan sehingga
+ * baris transaksi wajib dihapus lebih dulu sebelum peserta. Batas kuota khusus
+ * ikut terhapus lewat ON DELETE CASCADE. Semua langkah dijalankan dalam satu
+ * transaksi agar atomik.
+ *
+ * CATATAN: karena riwayat transaksi ikut hilang, angka pada Riwayat/Laporan
+ * untuk peserta ini tidak lagi muncul. Tindakan ini tidak bisa dibatalkan.
  */
 router.delete(
   '/:id',
@@ -392,18 +400,37 @@ router.delete(
     if (!ada) return res.status(404).json({ error: 'Peserta tidak ditemukan.' });
 
     const dipakai = (await query('SELECT COUNT(*) AS c FROM transaksi WHERE peserta_id = ?', [id]))[0].c;
-    if (dipakai > 0) {
-      await update('peserta', id, { aktif: 0, updated_at: nowIso(), updated_by: req.user.id });
-      await logAudit({ user: req.user, aksi: 'peserta.nonaktif', entitas: 'peserta', entitasId: id });
-      return res.json({
-        ok: true,
-        mode: 'nonaktif',
-        pesan: `Peserta ${ada.nama} dinonaktifkan (memiliki ${dipakai} riwayat transaksi). Barcode-nya tidak dapat dipakai lagi.`,
-      });
+
+    const conn = await getConnection();
+    try {
+      await conn.beginTransaction();
+      // Hapus seluruh riwayat transaksi peserta ini lebih dulu (FK RESTRICT).
+      await conn.query('DELETE FROM transaksi WHERE peserta_id = ?', [id]);
+      // kuota_peserta ikut terhapus lewat ON DELETE CASCADE saat peserta dihapus.
+      await conn.query('DELETE FROM peserta WHERE id = ?', [id]);
+      await conn.commit();
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
     }
-    await query('DELETE FROM peserta WHERE id = ?', [id]);
-    await logAudit({ user: req.user, aksi: 'peserta.hapus', entitas: 'peserta', entitasId: id, detail: ada.nomor_peserta });
-    res.json({ ok: true, mode: 'hapus', pesan: `Peserta ${ada.nama} dihapus.` });
+
+    await logAudit({
+      user: req.user,
+      aksi: 'peserta.hapus',
+      entitas: 'peserta',
+      entitasId: id,
+      detail: { nomor: ada.nomor_peserta, nama: ada.nama, riwayatDihapus: dipakai },
+    });
+    res.json({
+      ok: true,
+      mode: 'hapus',
+      pesan:
+        dipakai > 0
+          ? `Peserta ${ada.nama} dan ${dipakai} riwayat transaksinya dihapus total.`
+          : `Peserta ${ada.nama} dihapus total.`,
+    });
   }),
 );
 
