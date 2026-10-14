@@ -1,0 +1,7 @@
+{
+  "task_id": "task-mysql-migration",
+  "task_description": "Migrasi aplikasi web Barcode Peserta Event dari SQLite (better-sqlite3, sinkron) ke MySQL (mysql2/promise, pool + async) dengan auto-create database+tabel saat start, config via env (XAMPP: 127.0.0.1:3306 root / password kosong / db event_barcode), dan mesin kuota atomik berbasis SELECT ... FOR UPDATE. Frontend public/ tidak disentuh.",
+  "status": "completed",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003"],
+  "blocked_reason": null
+}

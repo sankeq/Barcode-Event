@@ -1,0 +1,29 @@
+{
+  "project_type": "Node.js/Express web app (API JSON + static UI di public/) untuk barcode peserta event: impor Excel, cetak barcode QR, pemindaian transaksi berkuota, laporan.",
+  "language": "JavaScript (CommonJS, 'use strict'), Node >= 20 (.nvmrc = 20).",
+  "build_system": "npm (tanpa langkah build/transpile). Entry: src/server.js. node_modules sudah terpasang. Dependency diubah di package.json: hapus better-sqlite3, tambah mysql2.",
+  "test_framework": "Tidak ada framework test. Verifikasi memakai: require per-modul (node -e require), skrip konkurensi sementara, npm run seed, dan smoke test curl terhadap server berjalan.",
+  "build_command": "npm install (setelah mengubah package.json). Tidak ada compile.",
+  "test_command": "node -e \"require('./src/<modul>')\" untuk cek sintaksis; npm run seed; smoke test curl (lihat verification_instructions).",
+  "verification_instructions": "DB-dependent: pastikan XAMPP MySQL hidup di 127.0.0.1:3306 (user root, password kosong). (1) initDb+SHOW TABLES harus menghasilkan >=8 tabel. (2) Uji konkurensi scan.js: seed kuota efektif 1, 25 prosesScan paralel via Promise.all -> tepat 1 'berhasil', 24 'ditolak'. (3) npm run seed selesai & idempoten saat dijalankan 2x (jumlah tidak dobel). (4) Jalankan node src/server.js, lalu curl /api/info (JSON nama_event), login admin/admin123 via /api/auth/login (dapat cookie sesi), satu POST /api/scan menghasilkan {status,pesan,peserta,jenisTransaksi,batas,terpakai,sisa,waktu}. Hentikan server & hapus skrip sementara setelah uji. Jika MySQL tidak hidup, catat jujur bahwa langkah DB-dependent tak terjalankan; jangan tandai selesai palsu.",
+  "snapshot_or_generated_files": "Tidak ada file generated yang di-commit. Database event_barcode dibuat otomatis saat start (BUKAN berkas repo). .gitignore mengecualikan data/ dan *.db.",
+  "environment_constraints": "better-sqlite3 native module bermasalah di lingkungan ini (perintah node/npm pernah diblokir permission) sehingga pindah ke mysql2 (pure JS). mysql2 memakai '?' placeholder sama seperti better-sqlite3. Transaksi row-lock WAJIB satu koneksi dari pool (pool.getConnection), bukan pool.query, agar FOR UPDATE efektif. JANGAN buat berkas .env nyata; hanya .env.example.",
+  "contribution_requirements": "Tidak ada AGENTS.md/CONTRIBUTING.md. Pertahankan gaya: CommonJS, 'use strict', komentar Bahasa Indonesia, pesan error/UI Bahasa Indonesia PERSIS. Frontend public/ TIDAK boleh diubah. Pertahankan header keamanan/CSP & urutan route di server.js.",
+  "key_patterns": "Data layer better-sqlite3 sinkron: getDb().prepare(sql).get()/.all()/.run(); helper insert(table,data)->lastInsertRowid, update(table,id,data)->changes, getSetting/setSetting(ON CONFLICT)/getNumberSetting. Transaksi: db.transaction(fn).immediate() (BEGIN IMMEDIATE). SQLite-isme yang harus diganti: 'COLLATE NOCASE' (hapus; andalkan collation kolom utf8mb4_unicode_ci), 'substr(datetime(waktu,\\'localtime\\'),1,10)' (ganti filter rentang ISO yang dihitung di JS via awalHariLokalIso/tanggalLokal), info.lastInsertRowid->insertId, info.changes->affectedRows, ON CONFLICT(...) DO UPDATE SET x=excluded.x -> ON DUPLICATE KEY UPDATE x=VALUES(x). Timestamp tetap string ISO UTC (new Date().toISOString()) di VARCHAR/TEXT.",
+  "relevant_files": [
+    "src/db.js (TULIS ULANG: pool mysql2/promise, env config + DATABASE_URL, initDb auto-create DB+tabel, helper async query/insert/update/getSetting/setSetting/getNumberSetting + getConnection untuk transaksi)",
+    "src/scan.js (TULIS ULANG: mesin kuota, transaksi InnoDB FOR UPDATE; pertahankan status/pesan/bentuk respons PERSIS)",
+    "src/util.js (daftarKategori async; hapus COLLATE NOCASE; helper tanggal awalHariLokalIso/tanggalLokal dipakai route)",
+    "src/auth.js (createSession/destroySession/userFromRequest async)",
+    "src/audit.js (logAudit/listAudit async)",
+    "src/excel.js (jenisAktif/validasiDanImpor async; upsert ON DUPLICATE KEY UPDATE)",
+    "src/seed.js (ensureSeed/seedContoh/seedContohTransaksi async; idempoten; require.main IIFE async; npm run seed)",
+    "src/server.js (start async; await initDb sebelum app.listen; pertahankan CSP/route; tutup pool saat shutdown)",
+    "src/routes/auth.js, scan.js, jenis.js, peserta.js, kuota.js, laporan.js, riwayat.js, admin.js (handler async + await data layer; perbaiki date SQL di jenis.js & laporan.js)",
+    "src/barcode.js (TIDAK diubah; sudah murni + bwip-js QR)",
+    "package.json (hapus better-sqlite3, tambah mysql2)",
+    "README.md (dokumentasi MySQL/XAMPP/auto-create)",
+    "public/ (REFERENSI SAJA; mengonsumsi bentuk respons /api/scan dan field aktif boolean; JANGAN diubah)"
+  ],
+  "directory_structure": "src/ = backend (server.js entry, db.js, scan.js, seed.js, auth.js, audit.js, util.js, excel.js, barcode.js, routes/*.js). public/ = frontend statis (JANGAN disentuh). data/ = berkas SQLite lama (di-gitignore; tak dipakai lagi). .agents/tasks/ = artifacts rencana (di luar area commit app)."
+}

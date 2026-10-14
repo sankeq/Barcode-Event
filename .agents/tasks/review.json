@@ -1,0 +1,37 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "severity": "info",
+      "detail": "Migrasi SQLite->MySQL benar dan lengkap, dan verifikasi fungsional LULUS dengan XAMPP MySQL hidup di 127.0.0.1:3306 (root/kosong). db.js adalah pool mysql2/promise async dengan config env + DATABASE_URL (DATABASE_URL menang, password kosong ditangani benar). initDb() membuat database event_barcode + tepat 8 tabel; semuanya ENGINE=InnoDB & TABLE_COLLATION=utf8mb4_unicode_ci (diverifikasi via information_schema). initDb() dipanggil 2x tanpa error (idempoten)."
+    },
+    {
+      "severity": "info",
+      "detail": "Foreign key benar: sessions->users, kuota_peserta->peserta, kuota_peserta->jenis_transaksi semuanya ON DELETE CASCADE. transaksi->jenis_transaksi dan transaksi->peserta memakai RESTRICT (tanpa CASCADE) — ini SESUAI skema SQLite basis (FK transaksi memang tidak ber-ON DELETE CASCADE agar riwayat tetap utuh), jadi bukan regresi. Index didefinisikan inline (UNIQUE KEY + KEY), termasuk idx_trx_kuota komposit; idx_trx_waktu dibuat tanpa DESC untuk kompatibilitas."
+    },
+    {
+      "severity": "info",
+      "detail": "Seluruh lapisan data & route sudah async dengan await yang benar — tidak ada getDb().prepare() sinkron tersisa, tidak ada await yang hilang. Verifikasi require-all-ok (16 modul). Kolom boolean -> TINYINT(1), timestamp -> VARCHAR(40) string ISO, placeholder tetap '?'. requireRole tetap sinkron (hanya baca req.user yang sudah diisi requireAuth async) — aman."
+    },
+    {
+      "severity": "info",
+      "detail": "Mesin kuota scan.js memakai satu koneksi pooled: getConnection()+beginTransaction+SELECT ... FOR UPDATE pada baris peserta sebagai titik serialisasi, commit/rollback/finally release. Status ('berhasil'|'ditolak'|'ganda'), pesan Indonesia, window anti-duplikat (jeda_duplikat_detik), dan bentuk respons prosesScan ({status,pesan,peserta{...},jenisTransaksi{...},batas,terpakai,sisa,waktu}) DIPERTAHANKAN PERSIS (early-return 'jenis tidak aktif' juga identik dengan basis). Uji konkurensi: 25 scan paralel pada kuota efektif 1 => berhasil=1 ditolak=24 ganda=0."
+    },
+    {
+      "severity": "info",
+      "detail": "Semua SQLite-ism hilang: grep bersih untuk COLLATE NOCASE, datetime(...)/localtime, lastInsertRowid, .changes, ON CONFLICT, BEGIN IMMEDIATE, .prepare(, db.transaction/.immediate, require('better-sqlite3'). Satu-satunya sisa adalah ekspor kompat DB_PATH:null (disengaja, terdokumentasi). ON CONFLICT diganti ON DUPLICATE KEY UPDATE; .changes diganti res.affectedRows; filter tanggal 'hari ini'/'7 hari' diganti rentang ISO via awalHariLokalIso(). Keunikan case-insensitive kini dijamin oleh collation kolom utf8mb4_unicode_ci (VARCHAR(190))."
+    },
+    {
+      "severity": "info",
+      "detail": "Seed idempoten (users=2, peserta=12, transaksi=21 pada run pertama & kedua dengan --force). server.js await initDb() paling awal sebelum app.listen; header keamanan + CSP + urutan mount route + penyajian public/ & vendor html5-qrcode + handler error TIDAK diubah; log 'Database:' menampilkan 127.0.0.1:3306/event_barcode; shutdown memanggil getPool().end(). Smoke test: GET /api/info => {\"nama_event\":\"Event Contoh 2026\"}, login admin/admin123 => cookie sesi. public/ (HTML/CSS/JS inti) tidak disentuh oleh migrasi."
+    },
+    {
+      "severity": "info",
+      "detail": "Dokumentasi: .env.example ada di root (DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME + DATABASE_URL dikomentari + var app opsional); TIDAK ada berkas .env nyata. README.md tidak lagi menyebut better-sqlite3/event.db/BEGIN IMMEDIATE/DB_PATH sebagai DB aktif; 23 penyebutan MySQL, menjelaskan XAMPP, auto-create, dan jaminan konkurensi FOR UPDATE."
+    },
+    {
+      "severity": "low",
+      "detail": "Perubahan tak terkait ikut ter-bundle di worktree (uncommitted) namun BUKAN bagian migrasi dan tidak merusak apa pun: src/barcode.js (code128->qrcode, dari permintaan 'barcode kotak' sebelumnya), public/cetak-barcode.html, public/js/cetak.js, public/js/pages/peserta.js, public/js/pages/scan.js, .nvmrc, railway.json. Tidak perlu aksi untuk migrasi; sekadar catatan agar reviewer tahu perubahan ini terpisah dari refactor MySQL. (Catatan: file .agents/tasks/*.json termasuk FEAT-003.json & file verdict ini juga belum di-commit.)"
+    }
+  ]
+}
